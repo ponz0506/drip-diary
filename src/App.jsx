@@ -8,7 +8,7 @@ const css = `
 @import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap');
 :root{
   --cream:#f1e8db; --paper:#faf6ef; --espresso:#2c1e15; --bean:#4a3424;
-  --mocha:#6b4e3a; --crema:#c98a4b; --terra:#b3552f; --muted:#9b8775; --line:#e3d8c8;
+  --mocha:#6b4e3a; --crema:#c98a4b; --terra:#b3552f; --muted:#9b8775; --line:#e3d8c8; --danger:#c0392b;
 }
 *{box-sizing:border-box;}
 html,body{overflow-x:hidden;max-width:100%;}
@@ -102,6 +102,7 @@ function Icon({ name, size = 22 }) {
     check: <path d="M5 12.5l4.5 4.5L19 7" {...p} />,
     pencil: <><path d="M14.5 5.5l4 4M4 20l1-4 11-11 3 3-11 11z" {...p} /></>,
     refresh: <><path d="M20 11a8 8 0 1 0-.6 4" {...p} /><path d="M20 4v5h-5" {...p} /></>,
+    trash: <><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13" {...p} /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -218,6 +219,25 @@ export default function App() {
   // 「淹れる」タブを押したとき：入力途中があれば確認、なければ新規開始
   const onBrew = () => { if (draft) setShowResume(true); else startRecord(); };
 
+  const [pendingNav, setPendingNav] = useState(null);
+  const [confirmDelId, setConfirmDelId] = useState(null);
+  // タブ切り替え時：編集中なら確認、それ以外は通常遷移
+  const requestNav = (key) => {
+    if (editingId && ["rec1", "rec2", "rec3", "chat"].includes(screen)) { setPendingNav(key); return; }
+    if (key === "rec") onBrew(); else setScreen(key);
+  };
+  const confirmLeave = () => {
+    const key = pendingNav; setPendingNav(null);
+    setEditingId(null); setDraft(null);
+    if (key === "rec") startRecord(); else setScreen(key);
+  };
+
+  const deleteLog = (id) => {
+    saveLogs(logs.filter(l => l.id !== id));
+    notify("日記から削除しました");
+    setScreen(detailFrom || "history");
+  };
+
   const startRecord = (preset, step = "rec1", editId = null) => {
     setEditingId(editId);
     setDraft({
@@ -265,10 +285,10 @@ export default function App() {
     <ToastCtx.Provider value={notify}>
     <div className="cd-sans" style={{ minHeight: "100vh", width: "100%", overflowX: "hidden", background: "var(--cream)", color: "var(--espresso)", maxWidth: 480, margin: "0 auto", position: "relative" }}>
       <style>{css}</style>
-      <Header screen={screen} setScreen={setScreen} detailFrom={detailFrom} />
+      <Header screen={screen} setScreen={setScreen} detailFrom={detailFrom} editing={!!editingId} />
       <div style={{ padding: "0 18px 110px" }}>
         {screen === "home" && <Home beans={beans} logs={logs} proposed={proposed} startRecord={startRecord} setScreen={setScreen} openLog={(id) => { setDetailId(id); setDetailFrom("home"); setScreen("logdetail"); }} />}
-        {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
+        {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
         {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} />}
@@ -278,7 +298,7 @@ export default function App() {
         {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
           onSave={(d) => saveDraftAsLog(d)} />}
       </div>
-      <Nav screen={screen} setScreen={setScreen} onBrew={onBrew} />
+      <Nav screen={screen} onTab={requestNav} />
       {toast && (
         <div key={toast.id} style={{ position: "fixed", bottom: 92, left: "50%", transform: "translateX(-50%)", zIndex: 50, background: "var(--espresso)", color: "var(--cream)", padding: "11px 22px", borderRadius: 24, fontSize: 13.5, fontWeight: 700, boxShadow: "0 8px 28px rgba(44,30,21,.35)", animation: "cdtoast .3s ease both", whiteSpace: "nowrap" }}>{toast.msg}</div>
       )}
@@ -292,13 +312,34 @@ export default function App() {
           </div>
         </div>
       )}
+      {pendingNav && (
+        <div onClick={() => setPendingNav(null)} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(44,30,21,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div onClick={e => e.stopPropagation()} className="cd-fade" style={{ background: "var(--paper)", borderRadius: 20, padding: 24, maxWidth: 340, width: "100%", boxShadow: "0 16px 40px rgba(44,30,21,.3)" }}>
+            <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>編集を中断しますか？</div>
+            <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>このまま移動すると、編集中の内容は保存されずに失われます。</div>
+            <Btn style={{ width: "100%", marginBottom: 10, background: "var(--danger)" }} onClick={confirmLeave}>破棄して移動する</Btn>
+            <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setPendingNav(null)}>編集を続ける</Btn>
+          </div>
+        </div>
+      )}
+      {confirmDelId && (
+        <div onClick={() => setConfirmDelId(null)} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(44,30,21,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div onClick={e => e.stopPropagation()} className="cd-fade" style={{ background: "var(--paper)", borderRadius: 20, padding: 24, maxWidth: 340, width: "100%", boxShadow: "0 16px 40px rgba(44,30,21,.3)" }}>
+            <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>この記録を削除しますか？</div>
+            <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>削除すると元に戻せません。</div>
+            <Btn style={{ width: "100%", marginBottom: 10, background: "var(--danger)" }} onClick={() => { const id = confirmDelId; setConfirmDelId(null); deleteLog(id); }}>削除する</Btn>
+            <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setConfirmDelId(null)}>キャンセル</Btn>
+          </div>
+        </div>
+      )}
     </div>
     </ToastCtx.Provider>
   );
 }
 
-function Header({ screen, setScreen, detailFrom }) {
+function Header({ screen, setScreen, detailFrom, editing }) {
   const back = { rec1: "home", rec2: "rec1", rec3: "rec2", chat: "rec3", karte: "home", history: "home", logdetail: detailFrom, profile: "home" };
+  const inFlow = ["rec1", "rec2", "rec3", "chat"].includes(screen);
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(241,232,219,.92)", backdropFilter: "blur(8px)", padding: "18px 18px 12px", display: "flex", alignItems: "center", gap: 10 }}>
       {back[screen] ? (
@@ -307,6 +348,9 @@ function Header({ screen, setScreen, detailFrom }) {
       <div className="cd-serif" style={{ fontSize: 19, fontWeight: 700, letterSpacing: ".02em" }}>
         {{ home: "Drip Diary", karte: "My棚", history: "日記", logdetail: detailFrom === "history" ? "日記" : "ホーム", profile: "プロフィール", rec1: "豆を選ぶ", rec2: "レシピ", rec3: "味わいメモ", chat: "AI診断" }[screen]}
       </div>
+      {editing && inFlow && (
+        <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 700, color: "var(--cream)", background: "var(--terra)", padding: "4px 11px", borderRadius: 20 }}>編集中</span>
+      )}
     </div>
   );
 }
@@ -517,7 +561,7 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
 }
 
 // ====== ログ詳細 ======
-function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit }) {
+function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit, onRequestDelete }) {
   let cum = 0;
   const chat = (l.chat || []).filter((_, i) => i !== 0);
   const beanName = bean?.name || l.beanName || "不明な豆";
@@ -525,9 +569,10 @@ function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit }) {
   const dripperName = dripper?.name || l.dripperName || "";
   return (
     <div className="cd-fade">
-      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
         <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.45, flex: 1 }}>{beanName}</div>
         <button onClick={onEdit} style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, background: "none", border: "1.5px solid var(--line)", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "6px 12px", borderRadius: 20 }}><Icon name="pencil" size={14} />編集</button>
+        <button onClick={onRequestDelete} title="削除" style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center", background: "none", border: "1.5px solid var(--line)", color: "var(--muted)", cursor: "pointer", padding: 7, borderRadius: 20 }}><Icon name="trash" size={15} /></button>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <span style={{ fontSize: 12.5, color: "var(--muted)" }}>{new Date(l.createdAt).toLocaleString("ja-JP", { dateStyle: "long", timeStyle: "short" })}</span>
@@ -1304,7 +1349,7 @@ function Profile({ profile, saveProfile, logs, beans, favorites, onLogout }) {
   );
 }
 
-function Nav({ screen, setScreen, onBrew }) {
+function Nav({ screen, onTab }) {
   const items = [["home", "home", "ホーム"], ["history", "diary", "日記"], ["rec", "brew", "淹れる"], ["karte", "shelf", "My棚"], ["profile", "user", "プロフィール"]];
   return (
     <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, maxWidth: 480, margin: "0 auto", background: "var(--paper)", borderTop: "1px solid var(--line)", display: "flex", alignItems: "flex-end", padding: "8px 0 14px", zIndex: 20 }}>
@@ -1312,7 +1357,7 @@ function Nav({ screen, setScreen, onBrew }) {
         const active = (k === "home" && screen === "home") || (k === "karte" && screen === "karte") || (k === "history" && screen === "history") || (k === "profile" && screen === "profile") || (k === "rec" && screen.startsWith("rec"));
         if (k === "rec") {
           return (
-            <button key={k} onClick={onBrew} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+            <button key={k} onClick={() => onTab("rec")} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
               <div style={{ width: 52, height: 52, borderRadius: "50%", background: active ? "var(--bean)" : "var(--terra)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", marginTop: -22, boxShadow: active ? "0 0 0 4px rgba(179,85,47,.22), 0 6px 16px rgba(44,30,21,.35)" : "0 6px 16px rgba(179,85,47,.4)", border: "4px solid var(--paper)", transition: "all .15s" }}>
                 <Icon name={ic} size={24} />
               </div>
@@ -1321,7 +1366,7 @@ function Nav({ screen, setScreen, onBrew }) {
           );
         }
         return (
-          <button key={k} onClick={() => setScreen(k)} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "5px 2px 3px", color: active ? "var(--terra)" : "var(--muted)" }}>
+          <button key={k} onClick={() => onTab(k)} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "5px 2px 3px", color: active ? "var(--terra)" : "var(--muted)" }}>
             <span style={{ height: 4, display: "flex", alignItems: "center" }}>{active && <span style={{ width: 5, height: 5, borderRadius: "50%", background: "var(--terra)" }} />}</span>
             <Icon name={ic} /><span style={{ fontSize: 10, fontWeight: 700, fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>{label}</span>
           </button>
