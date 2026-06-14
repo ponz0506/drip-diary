@@ -1,65 +1,54 @@
-# Drip Diary
+# Drip Diary (Stage 1: Supabase 接続版)
 
-ハンドドリップの記録 × AIで「次の一杯」を育てるアプリ（Vite + React）。
+ハンドドリップの記録 × AIで「次の一杯」を育てるアプリ。
+**ログイン・データ保存・AI診断**を Supabase で動かす本番構成です。
 
-このリポジトリは **AIなしのデモ版**です。記録・日記・My棚・プロフィールはすべて動き、データは**ブラウザのlocalStorage**に保存されます。AI診断は「準備中」のモック表示になっています（本番化の手順は最後尾）。
+- ログイン：Supabase Auth（メール＋パスワード）
+- データ保存：Supabase の `user_data` テーブル（ユーザーごと・RLSで保護）
+- AI診断：Supabase Edge Function `ai`（Gemini無料枠を中継。APIキーはサーバーに隠す）
 
 ---
 
-## 必要なもの
-- Node.js 18 以上（推奨：LTS版）。確認: `node -v`
+## 1. 必要な設定（初回のみ）
 
-## ローカルで動かす
-```bash
-npm install      # 初回だけ。依存をインストール
-npm run dev      # 開発サーバー起動（http://localhost:5173 が表示される）
+### (a) 環境変数 `.env`
+プロジェクト直下に `.env` があり、次の2つが入っています（このzipには記入済み）。
 ```
-ブラウザで表示されたURLを開けば動きます。コードを保存すると自動でリロードされます。
-
-本番ビルドの確認:
-```bash
-npm run build    # dist/ に本番ファイルを生成
-npm run preview  # ビルド結果をローカルで確認
+VITE_SUPABASE_URL=...     # SupabaseのProject URL
+VITE_SUPABASE_ANON_KEY=... # anon public キー（公開してよいキー）
 ```
+※ `.env` は .gitignore 済みなのでGitHubには上がりません（正常）。
+
+### (b) Supabase 側（テスト用に確認）
+- **メール確認をオフにすると、登録後すぐログインできます**（テスト向け）。
+  Supabase → Authentication → Sign In / Providers → Email の「Confirm email」をオフ。
+  （本番運用ではオンに戻すのが安全です）
+- `user_data` テーブルと `ai` 関数、`GEMINI_API_KEY` のSecret登録は設定済み。
 
 ---
 
-## Vercelで公開する（公開URLを出す）
-
-### 方法A：GitHub経由（おすすめ・自動デプロイ）
-1. このフォルダをGitHubリポジトリにpushする
-   ```bash
-   git init
-   git add .
-   git commit -m "init: drip diary demo"
-   git branch -M main
-   git remote add origin <あなたのリポジトリURL>
-   git push -u origin main
-   ```
-2. https://vercel.com にGitHubでログイン → **Add New → Project** → このリポジトリをImport
-3. Vercelが「Vite」を自動検出します。設定はそのままでOK（Build: `vite build` / Output: `dist`）
-4. **Deploy** を押すと、数十秒で `https://xxxx.vercel.app` の公開URLが発行されます
-5. 以降、`main`にpushするたびに自動で再デプロイされます
-
-### 方法B：Vercel CLI（手元から直接）
+## 2. ローカルで動かす
 ```bash
-npm i -g vercel
-vercel           # 初回は質問に答えるだけ。プレビューURLが出る
-vercel --prod    # 本番URLとして公開
+npm install      # @supabase/supabase-js も入ります
+npm run dev      # http://localhost:5173
 ```
+1. メールとパスワード（6文字以上）で「アカウントを作成」
+2. ログインして記録 → 日記 → AI診断 が動けばOK
+3. 別のブラウザ/端末で同じアカウントでログインすると、同じデータが見えます（同期）
 
 ---
 
-## データについて（デモ版）
-- 記録・豆・ミル・ドリッパー・定番レシピ・プロフィールは、**その端末/ブラウザのlocalStorage**に保存されます。
-- 別の端末やブラウザとは共有されません（本番でバックエンドを入れると共有・同期できます）。
+## 3. 公開（Vercel）に反映
+1. Vercel のプロジェクト → **Settings → Environment Variables** に、同じ2つを登録：
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_ANON_KEY`
+2. 変更をGitHubにpush（または Vercel で Redeploy）すると、本番URLでもログイン・保存・AIが有効になります。
+
+> 環境変数を入れずにデプロイすると、ログイン画面で接続エラーになります。必ずVercel側にも登録してください。
 
 ---
 
-## 本番化（あとでAIとログインを有効化する）
-1. **バックエンドを用意**（例：Supabase）。認証・データベース・サーバー関数をセットアップ。
-2. `src/App.jsx` の先頭の `AI_ENABLED` を `true` にし、AI呼び出し（`callAI` / `genRecipe`）の `fetch` 先を、APIキーを持つ**自前のサーバー関数のURL**に変更（キーは絶対にフロントに置かない）。
-3. `store`（`src/App.jsx` 内）の中身を localStorage から **Supabaseの読み書き**に差し替える。データ構造はそのまま流用できる設計です。
-4. その後、Capacitor等で包めば App Store / Google Play 申請に進めます。
-
-> メモ：依存パッケージのバージョンは作成時点のものです。うまくいかない場合は `npm create vite@latest` で最新のVite+Reactテンプレートを作り、`src/App.jsx` と `src/main.jsx`、`index.html` を本リポジトリの内容に置き換えてください。
+## モデル / コストについて
+- AIは Edge Function 内で **Gemini 2.5 Flash（無料枠）** を呼んでいます。
+  回数を増やしたい場合は関数内の `MODEL` を `gemini-2.5-flash-lite` に変更可。
+- Supabase無料枠は1週間未使用で一時停止します（使えば解除）。

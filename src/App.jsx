@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useContext, createContext } from "react";
+import { supabase } from "./supabaseClient";
 
 const ToastCtx = createContext(() => {});
 
@@ -34,19 +35,22 @@ const ROAST_LEVELS = ["浅煎り", "中浅煎り", "中煎り", "中深煎り", 
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ====== ストレージ ======
-// 本番でSupabase等のバックエンドを用意したら true に。デモ（AIなし）では false。
-const AI_ENABLED = false;
-
-// データ保存：Web版はブラウザのlocalStorageを使用。
-// 将来 Supabase 等に移行する際は、この store の中身だけ差し替えればOK。
+// ====== ストレージ（Supabase user_data テーブル） ======
+// ログイン中のユーザーの行だけを読み書きする（RLSで保護）。
+let _uid = null; // 現在のユーザーID（ログイン時にセット）
 const store = {
   async get(k, fallback) {
-    try { const v = localStorage.getItem(k); return v != null ? JSON.parse(v) : fallback; }
-    catch { return fallback; }
+    try {
+      const { data, error } = await supabase.from("user_data").select("value").eq("key", k).maybeSingle();
+      if (error || !data) return fallback;
+      return data.value ?? fallback;
+    } catch { return fallback; }
   },
   async set(k, v) {
-    try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* 容量超過など */ }
+    try {
+      if (!_uid) return;
+      await supabase.from("user_data").upsert({ user_id: _uid, key: k, value: v });
+    } catch (e) { /* 通信エラー等 */ }
   },
 };
 
@@ -96,6 +100,8 @@ function Icon({ name, size = 22 }) {
     dripper: <><path d="M5 6.5h14l-6 8v3.5h-2v-3.5z" {...p} /></>,
     recipe: <><rect x="6" y="3.5" width="12" height="17" rx="2" {...p} /><path d="M9 8.5h6M9 12h6M9 15.5h4" {...p} /></>,
     check: <path d="M5 12.5l4.5 4.5L19 7" {...p} />,
+    pencil: <><path d="M14.5 5.5l4 4M4 20l1-4 11-11 3 3-11 11z" {...p} /></>,
+    refresh: <><path d="M20 11a8 8 0 1 0-.6 4" {...p} /><path d="M20 4v5h-5" {...p} /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -146,28 +152,51 @@ export default function App() {
   const [detailId, setDetailId] = useState(null);
   const [detailFrom, setDetailFrom] = useState("home");
   const [profile, setProfile] = useState(null);
-  const [authed, setAuthed] = useState(false);
+  const [session, setSession] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
+  // セッション監視（ログイン/ログアウト）
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      _uid = data.session?.user?.id || null;
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      _uid = s?.user?.id || null;
+      setSession(s);
+      if (!s) {
+        setLoaded(false);
+        setBeans([]); setGrinders([]); setDrippers([]); setFavorites([]); setLogs([]); setProposed(null); setProfile(null);
+      }
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // ログイン後にこのユーザーのデータを読み込む
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
     (async () => {
+      setLoaded(false);
       let b = await store.get("cd_beans", null);
       if (!b) { b = [SEED_BEAN]; await store.set("cd_beans", b); }
-      setBeans(b);
       let g = await store.get("cd_grinders", null);
       if (!g) { g = [SEED_GRINDER]; await store.set("cd_grinders", g); }
-      setGrinders(g);
       let d = await store.get("cd_drippers", null);
       if (!d) { d = [SEED_DRIPPER]; await store.set("cd_drippers", d); }
-      setDrippers(d);
-      setFavorites(await store.get("cd_favorites", []));
-      setLogs(await store.get("cd_logs", []));
-      setProposed(await store.get("cd_proposed", null));
-      const pf = await store.get("cd_profile", null);
-      setProfile(pf); setAuthed(!!pf);
+      const fav = await store.get("cd_favorites", []);
+      const lg = await store.get("cd_logs", []);
+      const pr = await store.get("cd_proposed", null);
+      let pf = await store.get("cd_profile", null);
+      if (!pf) { pf = { name: session.user.user_metadata?.display_name || (session.user.email || "user").split("@")[0], since: Date.now() }; await store.set("cd_profile", pf); }
+      if (cancelled) return;
+      setBeans(b); setGrinders(g); setDrippers(d); setFavorites(fav); setLogs(lg); setProposed(pr); setProfile(pf);
       setLoaded(true);
     })();
-  }, []);
+    return () => { cancelled = true; };
+  }, [session]);
 
   const saveProfile = (p) => { setProfile(p); store.set("cd_profile", p); };
   const saveBeans = (b) => { setBeans(b); store.set("cd_beans", b); };
@@ -177,18 +206,44 @@ export default function App() {
   const saveLogs = (l) => { setLogs(l); store.set("cd_logs", l); };
   const saveProposed = (p) => { setProposed(p); store.set("cd_proposed", p); };
 
-  const startRecord = (preset, step = "rec1") => {
+  const [editingId, setEditingId] = useState(null);
+  const [flowStep, setFlowStep] = useState("rec1");
+  const [showResume, setShowResume] = useState(false);
+
+  // 記録フロー内の現在ステップを覚えておく（復帰用）
+  useEffect(() => {
+    if (["rec1", "rec2", "rec3", "chat"].includes(screen)) setFlowStep(screen);
+  }, [screen]);
+
+  // 「淹れる」タブを押したとき：入力途中があれば確認、なければ新規開始
+  const onBrew = () => { if (draft) setShowResume(true); else startRecord(); };
+
+  const startRecord = (preset, step = "rec1", editId = null) => {
+    setEditingId(editId);
     setDraft({
-      id: uid(), beanId: preset?.beanId || (beans[0]?.id ?? null),
+      id: editId || uid(), beanId: preset?.beanId || (beans[0]?.id ?? null),
       grinderId: preset?.grinderId || (grinders[0]?.id ?? null),
       dripperId: preset?.dripperId || (drippers[0]?.id ?? null),
       beanName: preset?.beanName || "", grinderName: preset?.grinderName || "", dripperName: preset?.dripperName || "",
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
       grind: preset?.grind || 20, pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
-      taste: { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
-      flavorBig: "", flavorSmall: "", memo: "", satisfaction: 3, createdAt: Date.now(), chat: [], nextRecipe: null,
+      taste: preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
+      flavorBig: preset?.flavorBig || "", flavorSmall: preset?.flavorSmall || "", memo: preset?.memo || "",
+      satisfaction: preset?.satisfaction || 3, createdAt: preset?.createdAt || Date.now(),
+      chat: editId ? (preset?.chat || []) : [], nextRecipe: editId ? (preset?.nextRecipe || null) : null,
     });
     setScreen(step);
+  };
+
+  // 新規なら先頭に追加、編集（同じid）なら置き換え
+  const saveDraftAsLog = (d) => {
+    const exists = logs.some(l => l.id === d.id);
+    const newLogs = exists ? logs.map(l => (l.id === d.id ? d : l)) : [d, ...logs];
+    saveLogs(newLogs);
+    if (d.nextRecipe) saveProposed({ ...d.nextRecipe, beanId: d.beanId, grinderId: d.grinderId, dripperId: d.dripperId, beanName: d.beanName, grinderName: d.grinderName, dripperName: d.dripperName });
+    notify(exists ? "記録を更新しました" : "日記に保存しました");
+    if (exists) { setDetailId(d.id); setScreen("logdetail"); } else { setScreen("home"); }
+    setEditingId(null); setDraft(null);
   };
 
   const [toast, setToast] = useState(null);
@@ -200,9 +255,11 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toast]);
 
-  if (!loaded) return <div style={{ minHeight: "100vh", background: "var(--cream)" }} />;
+  if (!authReady) return <div style={{ minHeight: "100vh", background: "var(--cream)" }} />;
 
-  if (!authed) return <Auth profile={profile} onLogin={(name) => { const p = profile && profile.name === name ? profile : { name, since: Date.now() }; saveProfile(p); setAuthed(true); setScreen("home"); }} onReset={() => { saveProfile(null); }} />;
+  if (!session) return <Auth />;
+
+  if (!loaded) return <div style={{ minHeight: "100vh", background: "var(--cream)" }} />;
 
   return (
     <ToastCtx.Provider value={notify}>
@@ -211,19 +268,29 @@ export default function App() {
       <Header screen={screen} setScreen={setScreen} detailFrom={detailFrom} />
       <div style={{ padding: "0 18px 110px" }}>
         {screen === "home" && <Home beans={beans} logs={logs} proposed={proposed} startRecord={startRecord} setScreen={setScreen} openLog={(id) => { setDetailId(id); setDetailFrom("home"); setScreen("logdetail"); }} />}
-        {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
+        {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
-        {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} onLogout={() => setAuthed(false)} />}
+        {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
-        {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} />}
+        {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
         {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
-          onSave={(d) => { saveLogs([d, ...logs]); if (d.nextRecipe) saveProposed({ ...d.nextRecipe, beanId: d.beanId, grinderId: d.grinderId, dripperId: d.dripperId, beanName: d.beanName, grinderName: d.grinderName, dripperName: d.dripperName }); notify("日記に保存しました"); setScreen("home"); }} />}
+          onSave={(d) => saveDraftAsLog(d)} />}
       </div>
-      <Nav screen={screen} setScreen={setScreen} startRecord={startRecord} />
+      <Nav screen={screen} setScreen={setScreen} onBrew={onBrew} />
       {toast && (
         <div key={toast.id} style={{ position: "fixed", bottom: 92, left: "50%", transform: "translateX(-50%)", zIndex: 50, background: "var(--espresso)", color: "var(--cream)", padding: "11px 22px", borderRadius: 24, fontSize: 13.5, fontWeight: 700, boxShadow: "0 8px 28px rgba(44,30,21,.35)", animation: "cdtoast .3s ease both", whiteSpace: "nowrap" }}>{toast.msg}</div>
+      )}
+      {showResume && (
+        <div onClick={() => setShowResume(false)} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(44,30,21,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div onClick={e => e.stopPropagation()} className="cd-fade" style={{ background: "var(--paper)", borderRadius: 20, padding: 24, maxWidth: 340, width: "100%", boxShadow: "0 16px 40px rgba(44,30,21,.3)" }}>
+            <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>入力途中の記録があります</div>
+            <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>前回の続きから入力できます。最初からやり直すと、入力中の内容は破棄されます。</div>
+            <Btn style={{ width: "100%", marginBottom: 10 }} onClick={() => { setShowResume(false); setScreen(flowStep || "rec1"); }}>続きから入力する</Btn>
+            <Btn kind="ghost" style={{ width: "100%" }} onClick={() => { setShowResume(false); startRecord(); }}>最初から始める</Btn>
+          </div>
+        </div>
       )}
     </div>
     </ToastCtx.Provider>
@@ -450,7 +517,7 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
 }
 
 // ====== ログ詳細 ======
-function LogDetail({ log: l, bean, grinder, dripper, startRecord }) {
+function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit }) {
   let cum = 0;
   const chat = (l.chat || []).filter((_, i) => i !== 0);
   const beanName = bean?.name || l.beanName || "不明な豆";
@@ -458,7 +525,10 @@ function LogDetail({ log: l, bean, grinder, dripper, startRecord }) {
   const dripperName = dripper?.name || l.dripperName || "";
   return (
     <div className="cd-fade">
-      <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.45, marginBottom: 6 }}>{beanName}</div>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 6 }}>
+        <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.45, flex: 1 }}>{beanName}</div>
+        <button onClick={onEdit} style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 4, background: "none", border: "1.5px solid var(--line)", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "6px 12px", borderRadius: 20 }}><Icon name="pencil" size={14} />編集</button>
+      </div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 18 }}>
         <span style={{ fontSize: 12.5, color: "var(--muted)" }}>{new Date(l.createdAt).toLocaleString("ja-JP", { dateStyle: "long", timeStyle: "short" })}</span>
         <span style={{ color: "var(--crema)", fontSize: 15 }}>{"★".repeat(l.satisfaction)}<span style={{ color: "var(--line)" }}>{"★".repeat(5 - l.satisfaction)}</span></span>
@@ -845,12 +915,14 @@ function Rec2({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
 }
 
 // ====== STEP3 味の評価（問診票）======
-function Rec3({ draft, setDraft, setScreen }) {
+function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
   const setTaste = (k, v) => setDraft({ ...draft, taste: { ...draft.taste, [k]: Number(v) } });
+  const req = <span style={{ color: "var(--terra)", fontSize: 11, marginLeft: 6 }}>必須</span>;
+  const valid = !!draft.flavorBig && !!draft.flavorSmall;
   return (
     <div className="cd-fade">
       <StepDots n={3} />
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 12 }}>味わいのバランス（1〜5）</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 12 }}>味わいのバランス（1〜5）{req}</div>
       {TASTE_AXES.map(ax => (
         <div key={ax} style={{ marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, marginBottom: 5 }}>
@@ -860,7 +932,7 @@ function Rec3({ draft, setDraft, setScreen }) {
         </div>
       ))}
 
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー{req}</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
         {Object.keys(FLAVOR_TREE).map(b => (
           <Chip key={b} active={draft.flavorBig === b} onClick={() => setDraft({ ...draft, flavorBig: b, flavorSmall: "" })}>{b}</Chip>
@@ -873,6 +945,7 @@ function Rec3({ draft, setDraft, setScreen }) {
           ))}
         </div>
       )}
+      {draft.flavorBig && !draft.flavorSmall && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もう一段、近いものを選んでください</div>}
 
       <Field label="メモ（気づいたこと）"><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginTop: 8 }} value={draft.memo} onChange={e => setDraft({ ...draft, memo: e.target.value })} placeholder="例：後味に少し渋みが残った" /></Field>
 
@@ -882,7 +955,9 @@ function Rec3({ draft, setDraft, setScreen }) {
           <button key={s} onClick={() => setDraft({ ...draft, satisfaction: s })} style={{ flex: 1, fontSize: 26, background: "none", border: "none", cursor: "pointer", color: s <= draft.satisfaction ? "var(--crema)" : "var(--line)" }}>★</button>
         ))}
       </div>
-      <Btn style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
+      {!valid && <div style={{ fontSize: 12, color: "var(--terra)", textAlign: "center", marginBottom: 10 }}>「感じたフレーバー」を選ぶと進めます</div>}
+      <Btn disabled={!valid} style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
+      <Btn kind="ghost" disabled={!valid} style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>{editing ? "変更を保存" : "相談せずに記録する"}</Btn>
     </div>
   );
 }
@@ -930,19 +1005,18 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
 - 一度に質問するのは1つだけ。メモで分かることは聞き返さない。
 - まずメモから気づいた点を1つ示し、それを深掘りする質問を1つする。
 - 2〜3往復したら、確定的な指示ではなく仮説として改善の方向性を示す。
-- 専門用語は噛み砕く。絵文字は使わない。`;
+- 専門用語は噛み砕く。絵文字は使わない。
+- 豆・ミル・ドリッパーなどの名前は、メモに書かれた表記をそのまま使う（勝手に読み替えたりカタカナ化しない）。`;
 
   const callAI = async (history) => {
-    if (!AI_ENABLED) {
-      await new Promise(r => setTimeout(r, 600));
-      return "（デモ版です）AI診断は準備中です。本番では、提出した味わいメモをもとに、淹れ方の気づきと「次の一歩」の質問がここに表示されます。\n\nバックエンド（Supabase等）とAPIキーを設定すると有効になります。";
-    }
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, system: SYSTEM, messages: history }),
+    const { data, error } = await supabase.functions.invoke("ai", {
+      body: { system: SYSTEM, messages: history, maxTokens: 1024 },
     });
-    const data = await res.json();
-    return data.content.map(c => c.type === "text" ? c.text : "").join("").trim();
+    if (error) throw error;
+    if (data?.error) throw new Error(data.error);
+    const text = (data?.text || "").trim();
+    if (!text) throw new Error("空の応答が返りました");
+    return text;
   };
 
   // 初回：問診票を渡してAIから口火を切る
@@ -955,7 +1029,7 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
           const reply = await callAI(first);
           const m = [...first, { role: "assistant", content: reply }];
           setMessages(m); setDraft({ ...draft, chat: m });
-        } catch { setMessages([{ role: "assistant", content: "うまく接続できませんでした。もう一度試してください。" }]); }
+        } catch (e) { console.error("AI(初回):", e); setMessages([{ role: "assistant", content: "うまく接続できませんでした。もう一度試してください。" }]); }
         setLoading(false);
       })();
     }
@@ -968,35 +1042,28 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
     const m = [...messages, { role: "user", content: input.trim() }];
     setMessages(m); setInput(""); setLoading(true);
     try { const reply = await callAI(m); const m2 = [...m, { role: "assistant", content: reply }]; setMessages(m2); setDraft({ ...draft, chat: m2 }); }
-    catch { setMessages([...m, { role: "assistant", content: "接続エラーが起きました。" }]); }
+    catch (e) { console.error("AI(送信):", e); setMessages([...m, { role: "assistant", content: "接続エラーが起きました。" }]); }
     setLoading(false);
   };
 
   const genRecipe = async () => {
     setGenningRecipe(true);
     try {
-      if (!AI_ENABLED) {
-        await new Promise(r => setTimeout(r, 600));
-        const r = {
-          grounds: draft.grounds, water: draft.water, temp: Math.min((draft.temp || 90) + 1, 96), grind: draft.grind,
-          pours: draft.pours.map(p => ({ ...p })),
-          grinderId: draft.grinderId, dripperId: draft.dripperId, grinderName: draft.grinderName, dripperName: draft.dripperName,
-          reason: "（デモ）湯温を1℃上げて甘みを引き出す例です",
-        };
-        setNextRecipe(r); setDraft({ ...draft, nextRecipe: r }); setExpanded(true); setGenningRecipe(false); return;
-      }
       const prompt = messages.map(x => `${x.role === "user" ? "ユーザー" : "AI"}: ${x.content}`).join("\n");
       const curPours = draft.pours.map(p => `${p.label}(${fmtTime(p.t)}/${p.ml}ml)`).join(", ");
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514", max_tokens: 900,
-          system: "あなたはコーヒー抽出アドバイザーです。これまでの対話をもとに、次回試すレシピを1つ提案します。注ぎ(pours)も具体的に組み立ててください。tは各投の開始秒数(1投目は0)、mlはその投で注ぐ量。必ず以下のJSONのみを出力し、前後の説明やマークダウンは禁止。{\"grounds\":数値,\"water\":数値,\"temp\":数値,\"grind\":数値,\"pours\":[{\"label\":\"1投目\",\"t\":0,\"ml\":数値}],\"reason\":\"今回からの変更点と狙いを40字以内で\"}",
+      const { data, error } = await supabase.functions.invoke("ai", {
+        body: {
+          system: "あなたはコーヒー抽出アドバイザーです。これまでの対話をもとに、次回試すレシピを1つ提案します。注ぎ(pours)も具体的に組み立ててください。tは各投の開始秒数(1投目は0)、mlはその投で注ぐ量。次のJSON形式のオブジェクトだけを返す。{\"grounds\":数値,\"water\":数値,\"temp\":数値,\"grind\":数値,\"pours\":[{\"label\":\"1投目\",\"t\":0,\"ml\":数値}],\"reason\":\"今回からの変更点と狙いを40字以内で\"}",
           messages: [{ role: "user", content: `現在のレシピ: 粉${draft.grounds}g 湯${draft.water}ml 湯温${draft.temp}℃ 粒度${draft.grind}\n現在の注ぎ: ${curPours}\n\n対話:\n${prompt}\n\n次回レシピをJSONで。` }],
-        }),
+          maxTokens: 900,
+          json: true,
+        },
       });
-      const data = await res.json();
-      let txt = data.content.map(c => c.text || "").join("").replace(/```json|```/g, "").trim();
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      let txt = (data?.text || "").replace(/```json|```/g, "").trim();
+      const m = txt.match(/\{[\s\S]*\}/);          // 文章が混じっても{...}だけ抜き出す
+      if (m) txt = m[0];
       const r = JSON.parse(txt);
       if (!Array.isArray(r.pours) || r.pours.length === 0) r.pours = draft.pours;
       r.grinderId = draft.grinderId; r.dripperId = draft.dripperId;
@@ -1007,16 +1074,41 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
   };
   const updateNext = (r) => { setNextRecipe(r); setDraft({ ...draft, nextRecipe: r }); };
 
+  // 直近のAI返信を作り直す
+  const regenerate = async () => {
+    if (loading) return;
+    let base = [...messages];
+    while (base.length && base[base.length - 1].role === "assistant") base.pop();
+    if (base.length === 0) base = [{ role: "user", content: sheet() + "\n\nこの味わいメモを読んで、診断を始めてください。" }];
+    setLoading(true);
+    try {
+      const reply = await callAI(base);
+      const m = [...base, { role: "assistant", content: reply }];
+      setMessages(m); setDraft({ ...draft, chat: m });
+    } catch (e) { console.error("AI(再生成):", e); }
+    setLoading(false);
+  };
+
+  const assistantCount = messages.filter(m => m.role === "assistant").length;
+  const recipeReady = assistantCount >= 2; // 何度かやり取りしたら強調
+  const dispMessages = messages.filter((_, i) => i !== 0);
+  const lastAssistantIdx = dispMessages.map(m => m.role).lastIndexOf("assistant");
+
   return (
     <div className="cd-fade">
       <div style={{ background: "var(--paper)", borderRadius: 14, padding: "12px 14px", fontSize: 12, color: "var(--muted)", marginBottom: 16, whiteSpace: "pre-wrap", lineHeight: 1.6, border: "1px solid var(--line)" }}>
         <b style={{ color: "var(--mocha)" }}>📋 提出した味わいメモ</b>{"\n"}{bean?.name || draft.beanName || "不明な豆"} · 粉{draft.grounds}g/湯{draft.water}ml/{draft.temp}℃ · 満足度{draft.satisfaction}★
       </div>
-      {messages.filter((_, i) => i !== 0).map((m, i) => (
-        <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
+      {dispMessages.map((m, i) => (
+        <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 12 }}>
           <div style={{ maxWidth: "82%", padding: "11px 15px", borderRadius: 16, fontSize: 14.5, lineHeight: 1.65,
             background: m.role === "user" ? "var(--terra)" : "var(--paper)", color: m.role === "user" ? "#fff" : "var(--espresso)",
             borderBottomRightRadius: m.role === "user" ? 4 : 16, borderBottomLeftRadius: m.role === "user" ? 16 : 4, whiteSpace: "pre-wrap" }}>{m.content}</div>
+          {m.role === "assistant" && i === lastAssistantIdx && !nextRecipe && !loading && (
+            <button onClick={regenerate} title="作り直す" style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "none", border: "none", color: "var(--muted)", fontSize: 11.5, fontWeight: 700, cursor: "pointer", marginTop: 5, padding: "2px 4px" }}>
+              <Icon name="refresh" size={13} />作り直す
+            </button>
+          )}
         </div>
       ))}
       {loading && <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontSize: 13, padding: "4px 8px" }}><div className="cd-spin" />考えています…</div>}
@@ -1053,7 +1145,7 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
                 placeholder="返信を入力…（Enterで改行 / ⌘+Enterで送信）" />
               <Btn onClick={send} disabled={loading || !input.trim()} style={{ padding: "11px 18px" }}>送信</Btn>
             </div>
-            <Btn kind="ghost" onClick={genRecipe} disabled={genningRecipe || messages.length < 3} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Btn kind={recipeReady ? undefined : "soft"} onClick={genRecipe} disabled={genningRecipe || !recipeReady} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
               {genningRecipe && <div className="cd-spin" />}次回レシピを作成する
             </Btn>
           </>
@@ -1067,10 +1159,51 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
 }
 
 // ====== ログイン / プロフィール作成 ======
-function Auth({ profile, onLogin, onReset }) {
-  const [name, setName] = useState(profile?.name || "");
-  const returning = !!profile;
-  return (
+function Auth() {
+  const [mode, setMode] = useState("signin"); // signin | signup
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [sent, setSent] = useState(false); // 確認メール送信後
+
+  const jaError = (m) => {
+    const s = String(m || "");
+    if (/Invalid login credentials/i.test(s)) return "メールアドレスまたはパスワードが正しくありません。";
+    if (/already registered|already been registered/i.test(s)) return "このメールアドレスは既に登録されています。「ログイン」からお進みください。";
+    if (/Email not confirmed/i.test(s)) return "メールの確認が完了していません。登録時のメールの確認リンクを開いてください。";
+    if (/Password should be at least/i.test(s)) return "パスワードは6文字以上にしてください。";
+    if (/invalid format|Unable to validate email/i.test(s)) return "メールアドレスの形式が正しくありません。";
+    if (/only request this after|rate limit|too many/i.test(s)) return "試行が多すぎます。少し時間をおいて再度お試しください。";
+    if (/network|fetch/i.test(s)) return "通信エラーが発生しました。接続を確認して再度お試しください。";
+    return "うまくいきませんでした。入力内容を確認して、もう一度お試しください。";
+  };
+
+  const submit = async () => {
+    if (mode === "signup" && !name.trim()) { setMsg("ユーザー名を入力してください。"); return; }
+    if (!email.trim() || pw.length < 6) { setMsg("メールアドレスと6文字以上のパスワードを入力してください。"); return; }
+    setBusy(true); setMsg("");
+    try {
+      if (mode === "signup") {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(), password: pw,
+          options: { data: { display_name: name.trim() } },
+        });
+        if (error) throw error;
+        if (!data.session) setSent(true); // メール確認が必要な設定のとき
+        // data.session がある場合は即ログイン（アプリ側が自動で切り替わる）
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password: pw });
+        if (error) throw error;
+      }
+    } catch (e) {
+      setMsg(jaError(e?.message));
+    }
+    setBusy(false);
+  };
+
+  const wrap = (children) => (
     <div className="cd-sans" style={{ minHeight: "100vh", background: "var(--cream)", color: "var(--espresso)", maxWidth: 480, margin: "0 auto", display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 28px" }}>
       <style>{css}</style>
       <div className="cd-fade" style={{ textAlign: "center", marginBottom: 28 }}>
@@ -1078,19 +1211,34 @@ function Auth({ profile, onLogin, onReset }) {
         <div className="cd-serif" style={{ fontSize: 26, fontWeight: 700, letterSpacing: ".02em" }}>Drip Diary</div>
         <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>淹れた一杯を記録して、<br />AIと一緒に次の一杯を育てる日記</div>
       </div>
-      {returning ? (
-        <div className="cd-fade">
-          <div style={{ textAlign: "center", fontSize: 15, marginBottom: 16 }}>おかえりなさい、<b className="cd-serif">{profile.name}</b> さん</div>
-          <Btn onClick={() => onLogin(profile.name)} style={{ width: "100%" }}>はじめる</Btn>
-          <button onClick={onReset} style={{ display: "block", margin: "16px auto 0", background: "none", border: "none", color: "var(--muted)", fontSize: 12.5, cursor: "pointer", textDecoration: "underline" }}>別の名前ではじめる</button>
-        </div>
-      ) : (
-        <div className="cd-fade">
-          <Field label="お名前 / ニックネーム"><input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="例：たろう" onKeyDown={e => e.key === "Enter" && name.trim() && onLogin(name.trim())} /></Field>
-          <Btn disabled={!name.trim()} onClick={() => onLogin(name.trim())} style={{ width: "100%", marginTop: 4 }}>はじめる</Btn>
-          <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 14, lineHeight: 1.7 }}>記録はこの端末に保存されます。</div>
-        </div>
-      )}
+      {children}
+    </div>
+  );
+
+  // 確認メール送信後の案内
+  if (sent) {
+    return wrap(
+      <div className="cd-fade" style={{ textAlign: "center" }}>
+        <div style={{ color: "var(--terra)", display: "flex", justifyContent: "center", marginBottom: 14 }}><Icon name="check" size={44} /></div>
+        <div className="cd-serif" style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>確認メールを送信しました</div>
+        <div style={{ fontSize: 14, lineHeight: 1.9, marginBottom: 8 }}><b>{email}</b> 宛に確認メールをお送りしました。<br />メール内のリンクを開くと登録が完了します。</div>
+        <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.8, marginBottom: 22 }}>メールが届かない場合は、迷惑メールフォルダもご確認ください。</div>
+        <Btn kind="ghost" style={{ width: "100%" }} onClick={() => { setSent(false); setMode("signin"); setPw(""); setMsg(""); }}>ログイン画面に戻る</Btn>
+      </div>
+    );
+  }
+
+  return wrap(
+    <div className="cd-fade">
+      {mode === "signup" && <Field label="ユーザー名（プロフィールに表示）"><input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="例：たろう" /></Field>}
+      <Field label="メールアドレス"><input style={inputStyle} type="email" autoComplete="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@example.com" /></Field>
+      <Field label="パスワード（6文字以上）"><input style={inputStyle} type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} value={pw} onChange={e => setPw(e.target.value)} placeholder="••••••••" onKeyDown={e => e.key === "Enter" && submit()} /></Field>
+      <Btn disabled={busy} onClick={submit} style={{ width: "100%", marginTop: 4 }}>{busy ? "処理中…" : (mode === "signup" ? "アカウントを作成" : "ログイン")}</Btn>
+      {msg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 12, lineHeight: 1.7 }}>{msg}</div>}
+      <button onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setMsg(""); }} style={{ display: "block", margin: "16px auto 0", background: "none", border: "none", color: "var(--mocha)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", textDecoration: "underline" }}>
+        {mode === "signup" ? "すでにアカウントがある → ログイン" : "はじめての方 → アカウントを作成"}
+      </button>
+      <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 14, lineHeight: 1.7 }}>記録はアカウントに紐づいて保存され、どの端末からでも見られます。</div>
     </div>
   );
 }
@@ -1156,7 +1304,7 @@ function Profile({ profile, saveProfile, logs, beans, favorites, onLogout }) {
   );
 }
 
-function Nav({ screen, setScreen, startRecord }) {
+function Nav({ screen, setScreen, onBrew }) {
   const items = [["home", "home", "ホーム"], ["history", "diary", "日記"], ["rec", "brew", "淹れる"], ["karte", "shelf", "My棚"], ["profile", "user", "プロフィール"]];
   return (
     <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, maxWidth: 480, margin: "0 auto", background: "var(--paper)", borderTop: "1px solid var(--line)", display: "flex", alignItems: "flex-end", padding: "8px 0 14px", zIndex: 20 }}>
@@ -1164,7 +1312,7 @@ function Nav({ screen, setScreen, startRecord }) {
         const active = (k === "home" && screen === "home") || (k === "karte" && screen === "karte") || (k === "history" && screen === "history") || (k === "profile" && screen === "profile") || (k === "rec" && screen.startsWith("rec"));
         if (k === "rec") {
           return (
-            <button key={k} onClick={() => startRecord()} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+            <button key={k} onClick={onBrew} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
               <div style={{ width: 52, height: 52, borderRadius: "50%", background: active ? "var(--bean)" : "var(--terra)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", marginTop: -22, boxShadow: active ? "0 0 0 4px rgba(179,85,47,.22), 0 6px 16px rgba(44,30,21,.35)" : "0 6px 16px rgba(179,85,47,.4)", border: "4px solid var(--paper)", transition: "all .15s" }}>
                 <Icon name={ic} size={24} />
               </div>
