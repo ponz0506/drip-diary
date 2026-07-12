@@ -66,6 +66,23 @@ const SEED_DRIPPER = { id: uid(), name: "Hario V60 02", type: "円錐", note: ""
 // 秒 ⇄ 分秒 の表示ヘルパー
 const fmtTime = (s) => `${Math.floor(s / 60)}分${String(s % 60).padStart(2, "0")}秒`;
 
+// AIが返した注ぎを現実的なタイミングに整える（間隔30〜45秒、近すぎ/離れすぎを補正）
+const sanitizePours = (pours, water) => {
+  let ps = Array.isArray(pours) ? pours.filter(p => p && (typeof p.ml === "number" || typeof p.ml === "string")) : [];
+  if (!ps.length) return [{ label: "1投目", t: 0, ml: Number(water) || 240 }];
+  ps = ps.map((p, i) => ({ label: p.label || `${i + 1}投目`, t: Number(p.t) || 0, ml: Math.max(0, Math.round(Number(p.ml) || 0)) }));
+  ps.sort((a, b) => a.t - b.t);
+  ps[0].t = 0; ps[0].label = "1投目";
+  for (let i = 1; i < ps.length; i++) {
+    let gap = ps[i].t - ps[i - 1].t;
+    if (!Number.isFinite(gap) || gap < 15) gap = 30; // 近すぎ→30秒
+    if (gap > 60) gap = 45;                          // 離れすぎ→45秒
+    ps[i].t = ps[i - 1].t + gap;
+    ps[i].label = `${i + 1}投目`;
+  }
+  return ps;
+};
+
 // ====== 小物 ======
 function Btn({ children, onClick, kind = "primary", disabled, style }) {
   const base = { fontFamily: "'Zen Kaku Gothic New',sans-serif", border: "none", borderRadius: 14, padding: "13px 20px", fontSize: 15, fontWeight: 700, cursor: disabled ? "default" : "pointer", transition: "transform .1s, opacity .2s", opacity: disabled ? .4 : 1, ...style };
@@ -221,6 +238,17 @@ export default function App() {
 
   const [pendingNav, setPendingNav] = useState(null);
   const [confirmDelId, setConfirmDelId] = useState(null);
+  const [confirmDelAccount, setConfirmDelAccount] = useState(false);
+
+  const deleteAccount = async () => {
+    setConfirmDelAccount(false);
+    try {
+      const { data, error } = await supabase.functions.invoke("delete-account");
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+      await supabase.auth.signOut();
+    } catch (e) { console.error("アカウント削除:", e); notify("アカウント削除に失敗しました。少し時間をおいて再度お試しください。"); }
+  };
   // タブ切り替え時：編集中なら確認、それ以外は通常遷移
   const requestNav = (key) => {
     if (editingId && ["rec1", "rec2", "rec3", "chat"].includes(screen)) { setPendingNav(key); return; }
@@ -291,7 +319,7 @@ export default function App() {
         {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
-        {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} />}
+        {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
@@ -329,6 +357,16 @@ export default function App() {
             <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>削除すると元に戻せません。</div>
             <Btn style={{ width: "100%", marginBottom: 10, background: "var(--danger)" }} onClick={() => { const id = confirmDelId; setConfirmDelId(null); deleteLog(id); }}>削除する</Btn>
             <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setConfirmDelId(null)}>キャンセル</Btn>
+          </div>
+        </div>
+      )}
+      {confirmDelAccount && (
+        <div onClick={() => setConfirmDelAccount(false)} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(44,30,21,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div onClick={e => e.stopPropagation()} className="cd-fade" style={{ background: "var(--paper)", borderRadius: 20, padding: 24, maxWidth: 340, width: "100%", boxShadow: "0 16px 40px rgba(44,30,21,.3)" }}>
+            <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>アカウントを削除しますか？</div>
+            <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>アカウントと、これまでの記録・豆・レシピなどすべてのデータが削除されます。元に戻すことはできません。</div>
+            <Btn style={{ width: "100%", marginBottom: 10, background: "var(--danger)" }} onClick={deleteAccount}>削除する</Btn>
+            <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setConfirmDelAccount(false)}>キャンセル</Btn>
           </div>
         </div>
       )}
@@ -1044,14 +1082,79 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
 メモ: ${draft.memo || "なし"}`;
   };
 
-  const SYSTEM = `あなたは経験豊富なコーヒーの抽出アドバイザーです。ユーザーがハンドドリップで淹れた一杯の「味わいメモ」を読み、対話を通じて次回の改善策を一緒に見つけます。
-ルール:
+  const SYSTEM = `あなたはハンドドリップコーヒーの抽出専門家です。以下の抽出理論と知識ベースをもとに、ユーザーの「味わいメモ」を読んで対話しながら次回の改善策を一緒に見つけます。
+
+【抽出理論の知識ベース】
+
+■ 4:6メソッド（粕谷哲 / 2016年WBrC優勝）
+- 総湯量を前半40%・後半60%に分けて考える。
+- 前半（蒸らし＋1〜2投）：味の方向性を決める。前半の1投目を多くすると甘み・コクが増し、少なくすると酸味・明るさが出る。
+- 後半（残り3投）：濃度を調整する。投数を増やすほど濃くなり、減らすと軽くなる。
+- 各投は均等に、一定のペースで注ぐ。全体を5投に分けるのが基本形。
+- 蒸らし不要。1投目から一定量を注いでいく設計。
+
+■ 味と抽出変数の因果関係
+・酸味が強い／薄い → 抽出不足のサイン。粒度を細かく・湯温を上げる・注ぎを遅くする・湯量を増やす。
+・苦みが強い／渋い → 抽出過多のサイン。粒度を粗く・湯温を下げる・注ぎを速く・湯量を減らす。
+・甘みが出ない → 湯温低めか粒度が粗すぎ。90〜93℃帯で試す。蒸らしをしっかり取る。
+・コクが薄い → 粉量を増やす（比率を下げる）か、後半の投数を増やす（4:6後半）。
+・雑味が出る → 過抽出または微粉が多い。粒度を粗く・湯温を下げる・抽出時間を短縮。
+・全体にぼんやりしている → 湯温が低すぎるか粒度が粗すぎ。
+
+■ ドリッパー別の傾向
+・V60（HARIO）：流速が速い。注ぎのスピードと量で味が大きく変わる。技術依存度が高い。
+・Kalita ウェーブ：底がフラット、安定して抽出しやすい。過抽出になりにくい。
+・Chemex：厚いフィルターで微粉をカット。クリーンな味わい。やや抽出が遅い。
+・オリガミ・その他円錐形：V60に近い傾向。リブの形状で流速が変わる。
+・台形（メリタ等）：低速・安定。初心者向け。湯温の影響を受けやすい。
+
+■ 焙煎度と湯温の目安
+・浅煎り：88〜94℃（高温で酸味を丸く、甘みを引き出す）
+・中煎り：87〜92℃（バランス重視）
+・深煎り：83〜88℃（低温で苦みを抑え、甘みを出す）
+
+■ 粒度の目安
+・細かい→抽出が増える（苦み・コクが出やすい、詰まりやすい）
+・粗い→抽出が減る（酸味・軽さが出やすい）
+・クリックミル（Comandante等）なら、中煎りで20〜24クリック前後が基準帯。
+
+■ 注ぎのタイミング（物理的な現実の制約）
+・全体の抽出時間：150〜210秒（2分30秒〜3分30秒）が現実的な範囲。
+・蒸らし：粉量の約2倍の湯で30〜45秒。
+・各投の間隔：30〜45秒。60秒以上空けることは実際の抽出では起こらない。
+・投数：3〜5投が一般的。
+
+■ 注ぎ量・注ぎ方と味の関係（ここが特に重要）
+・蒸らし量を増やす（粉×2.5〜3倍）→ 抽出が増える。甘み・コクが出やすい。鮮度の高い豆・深煎りに有効。
+・蒸らし量を減らす（粉×1.5倍）→ 抽出が落ち着く。酸味が立つ。鮮度の落ちた豆・浅煎りに。
+・蒸らし時間を長くする（45秒以上）→ より多く成分が溶け出す。甘みとコクが増す。
+・蒸らし時間を短くする（20〜30秒）→ クリーンで明るい味わいに。過抽出を防ぐ。
+・前半の1投目を多くする（4:6の前半比率を上げる）→ 甘み・コクが増す。
+・前半の1投目を少なくする（4:6の前半比率を下げる）→ 酸味・明るさが際立つ。
+・後半の投数を増やす（3投→4投）→ 濃度が上がる。コクが増す。
+・後半の投数を減らす（3投→2投）→ 濃度が下がる。軽くすっきりした味わいに。
+・注ぎを速くする（一気に注ぐ）→ 攪拌が増え、苦みや雑味が出やすい。抽出時間が短くなる。
+・注ぎを遅くする（細く静かに注ぐ）→ 攪拌が少なく、クリーンで甘い味わいに。抽出時間が長くなる。
+・断水時間（投と投の間）を長くする→ 濃度・コクが増す。過抽出に注意。
+・断水時間を短くする→ クリーンで抽出が安定する。雑味が出にくい。
+
+■ 注ぎの調整優先順位（改善の手順）
+1. まず注ぎ量（蒸らし・前後半の配分）を試す→最も味の方向性に影響する。
+2. 次に注ぎ速度・断水時間を試す→細かい質感の調整に効く。
+3. それでも改善しない場合に粒度・湯温を変える。
+
+■ 改善の原則
+- 一度に変える変数は1〜2つまで。複数同時に変えると原因が特定できない。
+- 変化は段階的に。粒度なら1〜2クリック、湯温なら1〜2℃から試す。
+- 比率（湯:粉）の変化は最後の手段。まず抽出変数（粒度・湯温・注ぎ）で調整する。
+
+【対話ルール】
 - 親しみやすく簡潔に。1回の返信は3〜4文程度。
 - 一度に質問するのは1つだけ。メモで分かることは聞き返さない。
-- まずメモから気づいた点を1つ示し、それを深掘りする質問を1つする。
-- 2〜3往復したら、確定的な指示ではなく仮説として改善の方向性を示す。
+- 上の知識ベースを根拠に、具体的な数値や仮説を提示する（「おそらく〜が原因で、〜を試してみてください」）。
+- 2〜3往復したら改善の方向性を仮説として示す。断定はしない。
 - 専門用語は噛み砕く。絵文字は使わない。
-- 豆・ミル・ドリッパーなどの名前は、メモに書かれた表記をそのまま使う（勝手に読み替えたりカタカナ化しない）。`;
+- 豆・ミル・ドリッパーの名前は、メモに書かれた表記をそのまま使う。`;
 
   const callAI = async (history) => {
     const { data, error } = await supabase.functions.invoke("ai", {
@@ -1096,12 +1199,32 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
     try {
       const prompt = messages.map(x => `${x.role === "user" ? "ユーザー" : "AI"}: ${x.content}`).join("\n");
       const curPours = draft.pours.map(p => `${p.label}(${fmtTime(p.t)}/${p.ml}ml)`).join(", ");
+      const dripper = drippers.find(d => d.id === draft.dripperId)?.name || draft.dripperName || "";
+      const bean = beans.find(b => b.id === draft.beanId);
+      const beanInfo = `${bean?.name || draft.beanName || "豆"}${bean?.roast ? `(焙煎:${bean.roast})` : ""}`;
       const { data, error } = await supabase.functions.invoke("ai", {
         body: {
-          system: "あなたはコーヒー抽出アドバイザーです。これまでの対話をもとに、次回試すレシピを1つ提案します。注ぎ(pours)も具体的に組み立ててください。tは各投の開始秒数(1投目は0)、mlはその投で注ぐ量。次のJSON形式のオブジェクトだけを返す。{\"grounds\":数値,\"water\":数値,\"temp\":数値,\"grind\":数値,\"pours\":[{\"label\":\"1投目\",\"t\":0,\"ml\":数値}],\"reason\":\"今回からの変更点と狙いを40字以内で\"}",
-          messages: [{ role: "user", content: `現在のレシピ: 粉${draft.grounds}g 湯${draft.water}ml 湯温${draft.temp}℃ 粒度${draft.grind}\n現在の注ぎ: ${curPours}\n\n対話:\n${prompt}\n\n次回レシピをJSONで。` }],
+          system: "あなたはハンドドリップコーヒーの抽出専門家です。以下の抽出理論をもとに、これまでの対話と味わいメモの内容を踏まえ、次回試す現実的なレシピを1つ提案します。\n\n" +
+            "【抽出理論の知識ベース（必ずこれに従う）】\n" +
+            "■ 4:6メソッド（粕谷哲）: 総湯量の前半40%で味の方向性、後半60%で濃度を調整する。\n" +
+            "■ 味と変数の因果: 酸味強い→抽出不足（粒度を細く/湯温を上げる/注ぎを遅く）。苦み強い→過抽出（粒度を粗く/湯温を下げる/注ぎを速く）。甘みが出ない→蒸らし量増やす・前半1投目を多く・湯温確認。\n" +
+            "■ 焙煎度と湯温: 浅煎り88〜94℃ / 中煎り87〜92℃ / 深煎り83〜88℃\n" +
+            "■ 注ぎ量・配分と味（最優先で調整する）:\n" +
+            "  - 蒸らし量増やす（粉×2.5〜3倍）→甘み・コク増。蒸らし量減らす（粉×1.5倍）→酸味・軽さ。\n" +
+            "  - 蒸らし時間長くする（45秒〜）→甘みとコク増。短くする（20〜30秒）→クリーンな味に。\n" +
+            "  - 前半1投目を多くする→甘み・コク。少なくする→酸味・明るさ。\n" +
+            "  - 後半の投数を増やす→濃度・コク増。減らす→軽くすっきり。\n" +
+            "  - 注ぎを速く→苦み・雑味が出やすい。注ぎを遅く（細く）→甘くクリーンに。\n" +
+            "  - 断水を長く→濃度・コク増。短く→クリーン・安定。\n" +
+            "■ 注ぎの制約（絶対に守る）: 1投目はt=0。各投の間隔は30〜45秒。60秒以上空けてはいけない。投数3〜5回。全体150〜210秒。\n" +
+            "■ 改善原則: 一度に変える変数は1〜2つ。注ぎの調整→粒度→湯温の順で試す。段階的に（粒度±1〜2クリック、湯温±1〜2℃）。\n\n" +
+            "前後の説明やマークダウンは付けず、次のJSONオブジェクトだけを返す:\n" +
+            "{\"grounds\":数値,\"water\":数値,\"temp\":数値,\"grind\":数値,\"pours\":[{\"label\":\"1投目\",\"t\":0,\"ml\":数値}],\"reason\":\"変更点と理論的な根拠を40字以内で\"}\n" +
+            "例（4:6・5投）: {\"grounds\":15,\"water\":240,\"temp\":92,\"grind\":20,\"pours\":[{\"label\":\"1投目\",\"t\":0,\"ml\":50},{\"label\":\"2投目\",\"t\":40,\"ml\":46},{\"label\":\"3投目\",\"t\":80,\"ml\":48},{\"label\":\"4投目\",\"t\":120,\"ml\":48},{\"label\":\"5投目\",\"t\":160,\"ml\":48}],\"reason\":\"前半均等で甘み安定、後半3投でコクを調整\"}",
+          messages: [{ role: "user", content: `豆: ${beanInfo}\nドリッパー: ${dripper}\n現在のレシピ: 粉${draft.grounds}g 湯${draft.water}ml 湯温${draft.temp}℃ 粒度${draft.grind}\n現在の注ぎ: ${curPours}\n\n対話:\n${prompt}\n\n上の常識を守って、次回レシピをJSONで。` }],
           maxTokens: 900,
           json: true,
+          temperature: 0.3,
         },
       });
       if (error) throw error;
@@ -1111,6 +1234,7 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
       if (m) txt = m[0];
       const r = JSON.parse(txt);
       if (!Array.isArray(r.pours) || r.pours.length === 0) r.pours = draft.pours;
+      r.pours = sanitizePours(r.pours, r.water || draft.water);   // 非現実的なタイミングを補正
       r.grinderId = draft.grinderId; r.dripperId = draft.dripperId;
       r.grinderName = draft.grinderName; r.dripperName = draft.dripperName;
       setNextRecipe(r); setDraft({ ...draft, nextRecipe: r }); setExpanded(true);
@@ -1289,10 +1413,46 @@ function Auth() {
 }
 
 // ====== プロフィール ======
-function Profile({ profile, saveProfile, logs, beans, favorites, onLogout }) {
+function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(profile?.name || "");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [acctMsg, setAcctMsg] = useState("");
+  const [busy, setBusy] = useState(false);
   const notify = useContext(ToastCtx);
+
+  const acctErr = (m) => {
+    const s = String(m || "");
+    if (/should be at least/i.test(s)) return "パスワードは6文字以上にしてください。";
+    if (/invalid format|valid email|Unable to validate/i.test(s)) return "メールアドレスの形式が正しくありません。";
+    if (/already|registered|exists/i.test(s)) return "そのメールアドレスは使用できません。";
+    if (/same|different from/i.test(s)) return "現在と同じ値です。別の内容を入力してください。";
+    if (/rate|after|too many/i.test(s)) return "短時間に試行しすぎました。少し待って再度お試しください。";
+    return "更新できませんでした。入力内容を確認してください。";
+  };
+  const changeEmail = async () => {
+    if (!newEmail.trim()) return;
+    setBusy(true); setAcctMsg("");
+    try {
+      const { error } = await supabase.auth.updateUser({ email: newEmail.trim() });
+      if (error) throw error;
+      setAcctMsg("確認メールを送信しました。新しいメールアドレスに届いたリンクを開くと変更が完了します。");
+      setNewEmail("");
+    } catch (e) { setAcctMsg(acctErr(e?.message)); }
+    setBusy(false);
+  };
+  const changePw = async () => {
+    if (newPw.length < 6) { setAcctMsg("パスワードは6文字以上にしてください。"); return; }
+    setBusy(true); setAcctMsg("");
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPw });
+      if (error) throw error;
+      setAcctMsg("パスワードを変更しました。");
+      setNewPw("");
+    } catch (e) { setAcctMsg(acctErr(e?.message)); }
+    setBusy(false);
+  };
 
   const cups = logs.length;
   const avg = cups ? (logs.reduce((s, l) => s + (l.satisfaction || 0), 0) / cups) : 0;
@@ -1343,8 +1503,31 @@ function Profile({ profile, saveProfile, logs, beans, favorites, onLogout }) {
         <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700 }}>{topBean}</div>
       </div>
 
-      <Btn kind="ghost" onClick={onLogout} style={{ width: "100%" }}>ログアウト</Btn>
-      <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 12, lineHeight: 1.7 }}>ログアウトしても記録は端末に残ります。</div>
+      {/* アカウント設定 */}
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 10 }}>アカウント設定</div>
+      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 14 }}>
+        <Field label="メールアドレス">
+          <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 6 }}>現在：{email}</div>
+          <input style={inputStyle} type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="新しいメールアドレス" />
+        </Field>
+        <Btn kind="soft" disabled={busy || !newEmail.trim()} onClick={changeEmail} style={{ width: "100%", marginTop: 4, marginBottom: 18 }}>メールアドレスを更新</Btn>
+
+        <Field label="パスワード（6文字以上）">
+          <input style={inputStyle} type="password" autoComplete="new-password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="新しいパスワード" />
+        </Field>
+        <Btn kind="soft" disabled={busy || newPw.length < 6} onClick={changePw} style={{ width: "100%", marginTop: 4 }}>パスワードを更新</Btn>
+
+        {acctMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 12, lineHeight: 1.7 }}>{acctMsg}</div>}
+      </div>
+
+      <Btn kind="ghost" onClick={onLogout} style={{ width: "100%", marginBottom: 18 }}>ログアウト</Btn>
+      <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginBottom: 24, lineHeight: 1.7 }}>ログアウトしても、記録はアカウントに保存されています。</div>
+
+      {/* アカウント削除 */}
+      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 18 }}>
+        <button onClick={onRequestDeleteAccount} style={{ width: "100%", background: "none", border: "1.5px solid var(--danger)", color: "var(--danger)", fontWeight: 700, fontSize: 13.5, padding: "12px", borderRadius: 12, cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>アカウントを削除する</button>
+        <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 10, lineHeight: 1.7 }}>アカウントとすべての記録が削除され、元に戻せません。</div>
+      </div>
     </div>
   );
 }
