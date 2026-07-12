@@ -432,14 +432,20 @@ function Home({ beans, logs, proposed, startRecord, setScreen, openLog }) {
 }
 
 // ====== ログカード（共通）======
-function LogCard({ log: l, bean, onClick }) {
+function LogCard({ log: l, bean, onClick, trialNo, showBeanNo }) {
+  const name = bean?.name || l.beanName || "不明な豆";
   return (
     <div onClick={onClick} style={{ background: "var(--paper)", borderRadius: 16, padding: 16, marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: onClick ? "pointer" : "default" }}>
-      <div>
-        <div style={{ fontWeight: 700, fontSize: 14.5 }}>{bean?.name || l.beanName || "不明な豆"}</div>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>{l.grounds}g / {l.water}ml / {l.temp}℃ · {new Date(l.createdAt).toLocaleDateString("ja-JP")}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 11, minWidth: 0 }}>
+        {trialNo != null && (
+          <div title={showBeanNo ? `${name}の${trialNo}回目` : `${trialNo}回目`} style={{ flexShrink: 0, width: 28, height: 28, borderRadius: "50%", background: "var(--cream)", border: "1px solid var(--line)", color: "var(--mocha)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>{trialNo}</div>
+        )}
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 14.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>{l.grounds}g / {l.water}ml / {l.temp}℃ · {new Date(l.createdAt).toLocaleDateString("ja-JP")}</div>
+        </div>
       </div>
-      <div style={{ textAlign: "center" }}>
+      <div style={{ textAlign: "center", flexShrink: 0, marginLeft: 8 }}>
         <div style={{ color: "var(--crema)", fontSize: 15 }}>{"★".repeat(l.satisfaction)}<span style={{ color: "var(--line)" }}>{"★".repeat(5 - l.satisfaction)}</span></div>
         {l.flavorSmall && <div style={{ fontSize: 11, color: "var(--mocha)", marginTop: 2 }}>{l.flavorSmall}</div>}
       </div>
@@ -544,12 +550,83 @@ function FavRecipes({ favorites, saveFavorites, grinders, drippers, startRecord 
   );
 }
 
+// ====== 味覚プロフィール（全記録横断・好みの傾向）======
+function TasteProfile({ logs, beans }) {
+  const AXES = ["酸味", "苦味", "甘味", "コク", "濃度感"];
+  const roastOf = (l) => beans.find(b => b.id === l.beanId)?.roastLevel;
+  const avgOf = (arr, ax) => arr.length ? arr.reduce((s, l) => s + (l.taste?.[ax] ?? 0), 0) / arr.length : 0;
+
+  if (logs.length < 3) {
+    return (
+      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: "18px 16px", marginBottom: 24, textAlign: "center" }}>
+        <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.8 }}>記録を重ねると、ここに<br />あなたの味の好みの傾向が表示されます。</div>
+      </div>
+    );
+  }
+
+  const high = logs.filter(l => l.satisfaction >= 4);
+  const radarData = AXES.map(ax => ({
+    subject: ax,
+    平均: Number(avgOf(logs, ax).toFixed(1)),
+    ...(high.length ? { 好み: Number(avgOf(high, ax).toFixed(1)) } : {}),
+  }));
+
+  // 焙煎度別の平均満足度
+  const roastStats = ROAST_LEVELS.map(r => {
+    const ls = logs.filter(l => roastOf(l) === r);
+    return { roast: r, count: ls.length, avg: ls.length ? ls.reduce((s, l) => s + l.satisfaction, 0) / ls.length : 0 };
+  }).filter(x => x.count > 0);
+
+  const bestRoast = [...roastStats].filter(x => x.count >= 2).sort((a, b) => b.avg - a.avg)[0];
+
+  // 高評価時によく出るフレーバー小カテゴリ
+  const flavCount = {};
+  high.forEach(l => { if (l.flavorSmall) flavCount[l.flavorSmall] = (flavCount[l.flavorSmall] || 0) + 1; });
+  const topFlav = Object.entries(flavCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+
+  return (
+    <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 24 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 4 }}>あなたの味の好み</div>
+      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 6 }}>全記録から。テラコッタが高評価（4-5★）だった味の形。</div>
+      <ResponsiveContainer width="100%" height={240}>
+        <RadarChart data={radarData}>
+          <PolarGrid stroke="#e3d8c8" />
+          <PolarAngleAxis dataKey="subject" tick={{ fontSize: 12, fill: "#6b4e3a" }} />
+          <Radar name="全体平均" dataKey="平均" stroke="#9b8775" fill="#9b8775" fillOpacity={0.08} strokeWidth={1.5} strokeDasharray="4 3" />
+          {high.length > 0 && <Radar name="好み(4-5★)" dataKey="好み" stroke="#b3552f" fill="#b3552f" fillOpacity={0.16} strokeWidth={2.5} />}
+          <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
+          <Tooltip contentStyle={{ fontSize: 12, borderRadius: 10, border: "1px solid #e3d8c8" }} />
+        </RadarChart>
+      </ResponsiveContainer>
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "14px 0 10px" }}>焙煎度別の満足度</div>
+      {roastStats.map(r => (
+        <div key={r.roast} style={{ marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+            <span>{r.roast}<span style={{ color: "var(--muted)", marginLeft: 6 }}>{r.count}杯</span></span>
+            <span style={{ color: "var(--terra)", fontWeight: 700 }}>{r.avg.toFixed(1)}★</span>
+          </div>
+          <div style={{ height: 6, background: "var(--cream)", borderRadius: 4, overflow: "hidden" }}>
+            <div style={{ width: `${(r.avg / 5) * 100}%`, height: "100%", background: "var(--crema)" }} />
+          </div>
+        </div>
+      ))}
+
+      {(bestRoast || topFlav) && (
+        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 12, lineHeight: 1.8 }}>
+          {bestRoast && <>満足度が高いのは <b style={{ color: "var(--terra)" }}>{bestRoast.roast}</b>（{bestRoast.avg.toFixed(1)}★）。</>}
+          {topFlav && <>高評価によく出る味は <b style={{ color: "var(--terra)" }}>{topFlav}</b>。</>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ====== 日記（全ログ一覧）======
 // ====== 豆別サマリーパネル ======
 const RADAR_COLORS = ["#b3552f", "#c98a4b", "#6b4e3a"];
 
-function BeanSummary({ logs, openLog }) {
-  const [tab, setTab] = useState("satisfaction"); // satisfaction | flavor | trail
+function BeanSummary({ logs, openLog, tab, setTab }) {
 
   // 古い順に並べ直して試行番号を付ける
   const sorted = [...logs].sort((a, b) => a.createdAt - b.createdAt).map((l, i) => ({ ...l, _n: i + 1 }));
@@ -565,29 +642,34 @@ function BeanSummary({ logs, openLog }) {
   // ---- ① 満足度推移 ----
   const satisfactionData = sorted.map(l => ({ name: `${l._n}回目`, 満足度: l.satisfaction, id: l.id, date: new Date(l.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) }));
 
-  // ---- ② フレーバー変化マップ（最新3件） ----
+  // ---- ② フレーバーマップ（満足度で色分け） ----
   const AXES = ["酸味", "苦味", "甘味", "コク", "濃度感"];
-  const recent3 = sorted.slice(-3);
-  const radarData = AXES.map(ax => {
-    const row = { subject: ax };
-    recent3.forEach((l, i) => { row[`${l._n}回目`] = l.taste?.[ax] ?? 0; });
-    return row;
-  });
+  const avgOf = (arr, ax) => arr.length ? arr.reduce((s, l) => s + (l.taste?.[ax] ?? 0), 0) / arr.length : null;
+  const allLogs = sorted;
+  const highLogs = sorted.filter(l => l.satisfaction >= 4); // 好みの形
+  const lowLogs = sorted.filter(l => l.satisfaction <= 2);  // 好みでない形
+  const radarData = AXES.map(ax => ({
+    subject: ax,
+    平均: Number((avgOf(allLogs, ax) ?? 0).toFixed(1)),
+    ...(highLogs.length ? { 高満足: Number(avgOf(highLogs, ax).toFixed(1)) } : {}),
+    ...(lowLogs.length ? { 低満足: Number(avgOf(lowLogs, ax).toFixed(1)) } : {}),
+  }));
 
   // ---- ③ 改善の軌跡 ----
   const trailData = sorted.map((l, i) => {
     const prev = sorted[i - 1];
-    const diff = (key, val) => {
-      if (!prev) return null;
-      const pv = prev[key];
-      if (pv == null || val == null || pv === val) return null;
-      return val > pv ? "up" : "down";
+    const pourCount = (l.pours || []).length;
+    const prevPourCount = (prev?.pours || []).length;
+    const diff = (cur, pv) => {
+      if (!prev || pv == null || cur == null || pv === cur) return null;
+      return cur > pv ? "up" : "down";
     };
     return {
       n: l._n, date: new Date(l.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }),
-      grind: l.grind, grindDir: diff("grind", l.grind),
-      temp: l.temp, tempDir: diff("temp", l.temp),
-      satisfaction: l.satisfaction, satDir: diff("satisfaction", l.satisfaction),
+      grind: l.grind, grindDir: diff(l.grind, prev?.grind),
+      temp: l.temp, tempDir: diff(l.temp, prev?.temp),
+      pourCount, pourDir: prev ? diff(pourCount, prevPourCount) : null,
+      satisfaction: l.satisfaction, satDir: diff(l.satisfaction, prev?.satisfaction),
       id: l.id,
     };
   });
@@ -641,28 +723,25 @@ function BeanSummary({ logs, openLog }) {
 
         {tab === "flavor" && (
           <>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>最新{recent3.length}回のフレーバーバランス比較</div>
-            <ResponsiveContainer width="100%" height={240}>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>満足度別の味の傾向（この豆で高評価だった味の形）</div>
+            <ResponsiveContainer width="100%" height={250}>
               <RadarChart data={radarData}>
                 <PolarGrid stroke="#e3d8c8" />
                 <PolarAngleAxis dataKey="subject" tick={{ fontSize: 12, fill: "#6b4e3a" }} />
-                {recent3.map((l, i) => (
-                  <Radar key={l.id} name={`${l._n}回目`} dataKey={`${l._n}回目`}
-                    stroke={RADAR_COLORS[i]} fill={RADAR_COLORS[i]} fillOpacity={0.12} strokeWidth={2} />
-                ))}
+                <Radar name="全体平均" dataKey="平均" stroke="#9b8775" fill="#9b8775" fillOpacity={0.08} strokeWidth={1.5} strokeDasharray="4 3" />
+                {highLogs.length > 0 && <Radar name="満足度4-5★" dataKey="高満足" stroke="#b3552f" fill="#b3552f" fillOpacity={0.16} strokeWidth={2.5} />}
+                {lowLogs.length > 0 && <Radar name="満足度1-2★" dataKey="低満足" stroke="#5b9bd5" fill="#5b9bd5" fillOpacity={0.1} strokeWidth={2} />}
                 <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
                 <Tooltip contentStyle={{ fontSize: 12, borderRadius: 10, border: "1px solid #e3d8c8" }} />
               </RadarChart>
             </ResponsiveContainer>
             <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, lineHeight: 1.8 }}>
               {(() => {
-                const changes = AXES.map(ax => {
-                  const vals = recent3.map(l => l.taste?.[ax] ?? 0);
-                  const diff = vals[vals.length - 1] - vals[0];
-                  return { ax, diff };
-                }).filter(x => Math.abs(x.diff) >= 1).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
-                if (!changes.length) return "直近3回のフレーバーに大きな変化はありません。";
-                return `変化が大きい軸：${changes.map(c => `${c.ax}（${c.diff > 0 ? "+" : ""}${c.diff}）`).join("、")}`;
+                if (highLogs.length === 0) return "満足度4以上の記録が増えると、好みの味の形が見えてきます。";
+                const diffs = AXES.map(ax => ({ ax, d: avgOf(highLogs, ax) - avgOf(allLogs, ax) })).sort((a, b) => Math.abs(b.d) - Math.abs(a.d));
+                const top = diffs.filter(x => Math.abs(x.d) >= 0.4).slice(0, 2);
+                if (!top.length) return "高評価の回は、平均的な味のバランスのときに多いようです。";
+                return `高評価のとき、平均より ${top.map(t => `${t.ax}が${t.d > 0 ? "高め" : "低め"}`).join("・")} の傾向です。`;
               })()}
             </div>
           </>
@@ -670,12 +749,12 @@ function BeanSummary({ logs, openLog }) {
 
         {tab === "trail" && (
           <>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>▲▼は前回からの変化。テラコッタ色は改善。</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>▲▼は前回からの変化。テラコッタ色は変化あり。</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
                   <tr style={{ borderBottom: "1.5px solid var(--line)" }}>
-                    {["回", "日付", "粒度", "湯温", "満足度"].map(h => (
+                    {["回", "日付", "粒度", "湯温", "投数", "満足度"].map(h => (
                       <th key={h} style={{ padding: "6px 8px", textAlign: "center", color: "var(--muted)", fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
                     ))}
                   </tr>
@@ -690,6 +769,9 @@ function BeanSummary({ logs, openLog }) {
                       </td>
                       <td style={{ padding: "8px", textAlign: "center", fontWeight: r.tempDir ? 700 : 400, color: r.tempDir ? "var(--terra)" : "var(--espresso)" }}>
                         {r.temp}℃<DirBadge dir={r.tempDir} />
+                      </td>
+                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.pourDir ? 700 : 400, color: r.pourDir ? "var(--terra)" : "var(--espresso)" }}>
+                        {r.pourCount}投<DirBadge dir={r.pourDir} />
                       </td>
                       <td style={{ padding: "8px", textAlign: "center", fontWeight: r.satDir ? 700 : 400, color: r.satDir ? "var(--terra)" : "var(--espresso)" }}>
                         <SatDot v={r.satisfaction} />
@@ -711,6 +793,8 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
   const [monthF, setMonthF] = useState("all");
   const [beanF, setBeanF] = useState("all");
   const [roastF, setRoastF] = useState("all");
+  const [sumTab, setSumTab] = useState("satisfaction"); // サマリーのタブ位置を保持
+
   const beanOf = (id) => beans.find(b => b.id === id);
   const monthKey = (l) => new Date(l.createdAt).toLocaleDateString("ja-JP", { year: "numeric", month: "long" });
   const beanLabel = (l) => beanOf(l.beanId)?.name || l.beanName || "不明な豆";
@@ -723,19 +807,53 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
     </div>;
   }
 
+  // 豆ごとに「古い順の試行番号」を割り当て（チャートと一致させる）
+  const trialNo = {};
+  const byBean = {};
+  [...logs].sort((a, b) => a.createdAt - b.createdAt).forEach(l => {
+    const key = beanLabel(l);
+    (byBean[key] ||= 0); byBean[key] += 1; trialNo[l.id] = byBean[key];
+  });
+
+  // 最も淹れた回数の多い豆（サマリーの代理表示用）
+  const topBean = (() => {
+    const counts = {};
+    logs.forEach(l => { const n = beanLabel(l); counts[n] = (counts[n] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  })();
+
   const months = [...new Set(logs.map(monthKey))];
   const usedBeans = [...new Set(logs.map(beanLabel))];
   const usedRoasts = ROAST_LEVELS.filter(r => logs.some(l => roastOf(l) === r));
   const active = monthF !== "all" || beanF !== "all" || roastF !== "all";
 
-  const filtered = logs.filter(l => (monthF === "all" || monthKey(l) === monthF) && (beanF === "all" || beanLabel(l) === beanF) && (roastF === "all" || roastOf(l) === roastF));
-  const beanLogs = beanF !== "all" ? logs.filter(l => beanLabel(l) === beanF) : [];
+  // 一覧（新しい順）
+  const filtered = logs
+    .filter(l => (monthF === "all" || monthKey(l) === monthF) && (beanF === "all" || beanLabel(l) === beanF) && (roastF === "all" || roastOf(l) === roastF))
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  // サマリー対象：豆フィルターが選ばれていればその豆、なければ最多豆を代理表示
+  const summaryBean = beanF !== "all" ? beanF : topBean;
+  const beanLogs = summaryBean ? logs.filter(l => beanLabel(l) === summaryBean) : [];
+  const showSummary = beanLogs.length >= 1;
+
+  // 月グループ（新しい月が上）
   const groups = {};
   filtered.forEach(l => { (groups[monthKey(l)] ||= []).push(l); });
 
   const selStyle = { ...inputStyle, flex: "1 1 30%", minWidth: 100, fontSize: 13, padding: "9px 10px", appearance: "auto" };
   return (
     <div className="cd-fade">
+      {/* 豆別サマリー：フィルター未選択でも最多豆で表示 */}
+      {showSummary && (
+        <div style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+            {beanF === "all" ? <>よく淹れる豆「<b style={{ color: "var(--mocha)" }}>{summaryBean}</b>」の傾向</> : <><b style={{ color: "var(--mocha)" }}>{summaryBean}</b> の抽出データ</>}
+          </div>
+          <BeanSummary logs={beanLogs} openLog={openLog} tab={sumTab} setTab={setSumTab} />
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <select style={selStyle} value={monthF} onChange={e => setMonthF(e.target.value)}>
           <option value="all">すべての月</option>
@@ -754,12 +872,11 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
         {filtered.length} 杯{active && `（全${logs.length}杯中）`}
         {active && <button onClick={() => { setMonthF("all"); setBeanF("all"); setRoastF("all"); }} style={{ background: "none", border: "none", color: "var(--terra)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", marginLeft: 8 }}>クリア</button>}
       </div>
-      {beanF !== "all" && <BeanSummary logs={beanLogs} openLog={openLog} />}
       {filtered.length === 0 && <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: 20 }}>条件に合う記録がありません。</div>}
       {Object.entries(groups).map(([month, ls]) => (
         <div key={month} style={{ marginBottom: 18 }}>
           <div style={{ fontSize: 12, fontWeight: 700, color: "var(--mocha)", marginBottom: 8 }}>{month}</div>
-          {ls.map(l => <LogCard key={l.id} log={l} bean={beanOf(l.beanId)} onClick={() => openLog(l.id)} />)}
+          {ls.map(l => <LogCard key={l.id} log={l} bean={beanOf(l.beanId)} trialNo={trialNo[l.id]} showBeanNo={beanF === "all"} onClick={() => openLog(l.id)} />)}
         </div>
       ))}
     </div>
@@ -1670,6 +1787,8 @@ function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>よく淹れる豆</div>
         <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700 }}>{topBean}</div>
       </div>
+
+      <TasteProfile logs={logs} beans={beans} />
 
       {/* アカウント設定 */}
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 10 }}>アカウント設定</div>
