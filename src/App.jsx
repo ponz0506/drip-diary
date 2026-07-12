@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef, useContext, createContext } from "react";
 import { supabase } from "./supabaseClient";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, Legend,
+} from "recharts";
 
 const ToastCtx = createContext(() => {});
 
@@ -541,6 +545,168 @@ function FavRecipes({ favorites, saveFavorites, grinders, drippers, startRecord 
 }
 
 // ====== 日記（全ログ一覧）======
+// ====== 豆別サマリーパネル ======
+const RADAR_COLORS = ["#b3552f", "#c98a4b", "#6b4e3a"];
+
+function BeanSummary({ logs, openLog }) {
+  const [tab, setTab] = useState("satisfaction"); // satisfaction | flavor | trail
+
+  // 古い順に並べ直して試行番号を付ける
+  const sorted = [...logs].sort((a, b) => a.createdAt - b.createdAt).map((l, i) => ({ ...l, _n: i + 1 }));
+
+  if (sorted.length < 3) {
+    return (
+      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 16, padding: "18px 16px", marginBottom: 18, textAlign: "center" }}>
+        <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.8 }}>記録を重ねると、ここにデータが表示されます。<br />あと <b style={{ color: "var(--terra)" }}>{3 - sorted.length} 杯</b> 記録してみましょう。</div>
+      </div>
+    );
+  }
+
+  // ---- ① 満足度推移 ----
+  const satisfactionData = sorted.map(l => ({ name: `${l._n}回目`, 満足度: l.satisfaction, id: l.id, date: new Date(l.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }) }));
+
+  // ---- ② フレーバー変化マップ（最新3件） ----
+  const AXES = ["酸味", "苦味", "甘味", "コク", "濃度感"];
+  const recent3 = sorted.slice(-3);
+  const radarData = AXES.map(ax => {
+    const row = { subject: ax };
+    recent3.forEach((l, i) => { row[`${l._n}回目`] = l.taste?.[ax] ?? 0; });
+    return row;
+  });
+
+  // ---- ③ 改善の軌跡 ----
+  const trailData = sorted.map((l, i) => {
+    const prev = sorted[i - 1];
+    const diff = (key, val) => {
+      if (!prev) return null;
+      const pv = prev[key];
+      if (pv == null || val == null || pv === val) return null;
+      return val > pv ? "up" : "down";
+    };
+    return {
+      n: l._n, date: new Date(l.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }),
+      grind: l.grind, grindDir: diff("grind", l.grind),
+      temp: l.temp, tempDir: diff("temp", l.temp),
+      satisfaction: l.satisfaction, satDir: diff("satisfaction", l.satisfaction),
+      id: l.id,
+    };
+  });
+
+  const tabStyle = (k) => ({
+    flex: 1, padding: "8px 4px", fontSize: 12, fontWeight: 700, background: "none",
+    border: "none", borderBottom: tab === k ? "2.5px solid var(--terra)" : "2.5px solid transparent",
+    color: tab === k ? "var(--terra)" : "var(--muted)", cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif",
+  });
+
+  const DirBadge = ({ dir }) => {
+    if (!dir) return null;
+    return <span style={{ marginLeft: 4, fontSize: 10, color: dir === "up" ? "#e07b39" : "#5b9bd5" }}>{dir === "up" ? "▲" : "▼"}</span>;
+  };
+
+  const SatDot = ({ v }) => <span style={{ color: "var(--crema)" }}>{"★".repeat(v)}<span style={{ color: "var(--line)" }}>{"★".repeat(5 - v)}</span></span>;
+
+  return (
+    <div className="cd-fade" style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 16, marginBottom: 18, overflow: "hidden" }}>
+      <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
+        <button style={tabStyle("satisfaction")} onClick={() => setTab("satisfaction")}>満足度推移</button>
+        <button style={tabStyle("flavor")} onClick={() => setTab("flavor")}>フレーバー</button>
+        <button style={tabStyle("trail")} onClick={() => setTab("trail")}>改善の軌跡</button>
+      </div>
+
+      <div style={{ padding: "16px 12px" }}>
+
+        {tab === "satisfaction" && (
+          <>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>試行回ごとの満足度（タップで詳細へ）</div>
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={satisfactionData} onClick={d => d?.activePayload && openLog(d.activePayload[0].payload.id)}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e3d8c8" />
+                <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9b8775" }} />
+                <YAxis domain={[1, 5]} ticks={[1,2,3,4,5]} tick={{ fontSize: 11, fill: "#9b8775" }} width={20} />
+                <Tooltip formatter={(v) => [`${v}★`, "満足度"]} labelFormatter={(l) => l} contentStyle={{ fontSize: 12, borderRadius: 10, border: "1px solid #e3d8c8" }} />
+                <Line type="monotone" dataKey="満足度" stroke="#b3552f" strokeWidth={2.5} dot={{ r: 5, fill: "#b3552f", stroke: "#fff", strokeWidth: 2 }} activeDot={{ r: 7 }} />
+              </LineChart>
+            </ResponsiveContainer>
+            <div style={{ marginTop: 12 }}>
+              {(() => {
+                const best = [...sorted].sort((a, b) => b.satisfaction - a.satisfaction)[0];
+                return <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.8 }}>
+                  最高満足度：<b style={{ color: "var(--terra)" }}>{best.satisfaction}★</b>（{best._n}回目 / 粒度{best.grind} / {best.temp}℃）
+                  <button onClick={() => openLog(best.id)} style={{ marginLeft: 8, background: "none", border: "none", color: "var(--terra)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>詳細 →</button>
+                </div>;
+              })()}
+            </div>
+          </>
+        )}
+
+        {tab === "flavor" && (
+          <>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>最新{recent3.length}回のフレーバーバランス比較</div>
+            <ResponsiveContainer width="100%" height={240}>
+              <RadarChart data={radarData}>
+                <PolarGrid stroke="#e3d8c8" />
+                <PolarAngleAxis dataKey="subject" tick={{ fontSize: 12, fill: "#6b4e3a" }} />
+                {recent3.map((l, i) => (
+                  <Radar key={l.id} name={`${l._n}回目`} dataKey={`${l._n}回目`}
+                    stroke={RADAR_COLORS[i]} fill={RADAR_COLORS[i]} fillOpacity={0.12} strokeWidth={2} />
+                ))}
+                <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 10, border: "1px solid #e3d8c8" }} />
+              </RadarChart>
+            </ResponsiveContainer>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, lineHeight: 1.8 }}>
+              {(() => {
+                const changes = AXES.map(ax => {
+                  const vals = recent3.map(l => l.taste?.[ax] ?? 0);
+                  const diff = vals[vals.length - 1] - vals[0];
+                  return { ax, diff };
+                }).filter(x => Math.abs(x.diff) >= 1).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+                if (!changes.length) return "直近3回のフレーバーに大きな変化はありません。";
+                return `変化が大きい軸：${changes.map(c => `${c.ax}（${c.diff > 0 ? "+" : ""}${c.diff}）`).join("、")}`;
+              })()}
+            </div>
+          </>
+        )}
+
+        {tab === "trail" && (
+          <>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>▲▼は前回からの変化。テラコッタ色は改善。</div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1.5px solid var(--line)" }}>
+                    {["回", "日付", "粒度", "湯温", "満足度"].map(h => (
+                      <th key={h} style={{ padding: "6px 8px", textAlign: "center", color: "var(--muted)", fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {trailData.map((r, i) => (
+                    <tr key={r.id} onClick={() => openLog(r.id)} style={{ borderBottom: "1px solid var(--line)", cursor: "pointer", background: i % 2 === 0 ? "transparent" : "rgba(227,216,200,.2)" }}>
+                      <td style={{ padding: "8px", textAlign: "center", color: "var(--muted)" }}>{r.n}</td>
+                      <td style={{ padding: "8px", textAlign: "center", color: "var(--muted)", whiteSpace: "nowrap" }}>{r.date}</td>
+                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.grindDir ? 700 : 400, color: r.grindDir ? "var(--terra)" : "var(--espresso)" }}>
+                        {r.grind}<DirBadge dir={r.grindDir} />
+                      </td>
+                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.tempDir ? 700 : 400, color: r.tempDir ? "var(--terra)" : "var(--espresso)" }}>
+                        {r.temp}℃<DirBadge dir={r.tempDir} />
+                      </td>
+                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.satDir ? 700 : 400, color: r.satDir ? "var(--terra)" : "var(--espresso)" }}>
+                        <SatDot v={r.satisfaction} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
   const [monthF, setMonthF] = useState("all");
   const [beanF, setBeanF] = useState("all");
@@ -563,6 +729,7 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
   const active = monthF !== "all" || beanF !== "all" || roastF !== "all";
 
   const filtered = logs.filter(l => (monthF === "all" || monthKey(l) === monthF) && (beanF === "all" || beanLabel(l) === beanF) && (roastF === "all" || roastOf(l) === roastF));
+  const beanLogs = beanF !== "all" ? logs.filter(l => beanLabel(l) === beanF) : [];
   const groups = {};
   filtered.forEach(l => { (groups[monthKey(l)] ||= []).push(l); });
 
@@ -587,6 +754,7 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
         {filtered.length} 杯{active && `（全${logs.length}杯中）`}
         {active && <button onClick={() => { setMonthF("all"); setBeanF("all"); setRoastF("all"); }} style={{ background: "none", border: "none", color: "var(--terra)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", marginLeft: 8 }}>クリア</button>}
       </div>
+      {beanF !== "all" && <BeanSummary logs={beanLogs} openLog={openLog} />}
       {filtered.length === 0 && <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: 20 }}>条件に合う記録がありません。</div>}
       {Object.entries(groups).map(([month, ls]) => (
         <div key={month} style={{ marginBottom: 18 }}>
