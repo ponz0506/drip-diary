@@ -22,6 +22,8 @@ input[type=range]{-webkit-appearance:none;height:4px;border-radius:4px;backgroun
 input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--terra);cursor:pointer;border:3px solid var(--paper);box-shadow:0 1px 4px rgba(44,30,21,.3);}
 .cd-fade{animation:cdfade .4s ease both;}
 @keyframes cdfade{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+.cd-sheet{animation:cdsheet .28s cubic-bezier(.22,.61,.36,1) both;}
+@keyframes cdsheet{from{transform:translateY(100%);}to{transform:translateY(0);}}
 .cd-spin{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--terra);border-radius:50%;animation:cdspin .7s linear infinite;}
 @keyframes cdspin{to{transform:rotate(360deg);}}
 @keyframes cdtoast{from{opacity:0;transform:translate(-50%,10px);}to{opacity:1;transform:translate(-50%,0);}}
@@ -36,6 +38,8 @@ const FLAVOR_TREE = {
 };
 const TASTE_AXES = ["酸味", "苦味", "甘味", "コク", "濃度感", "雑味"];
 const ROAST_LEVELS = ["浅煎り", "中浅煎り", "中煎り", "中深煎り", "深煎り"];
+const AVATAR_EMOJIS = ["☕", "🫖", "🌱", "🫘", "🍵", "🔥", "💧", "⏱️", "📓", "✨", "🐈", "🌙"];
+const AVATAR_COLORS = ["#4a3424", "#b3552f", "#6b4e3a", "#c98a4b", "#2c1e15", "#7a8b6f", "#4a6b7a", "#8a5a7a"];
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 
@@ -124,6 +128,7 @@ function Icon({ name, size = 22 }) {
     pencil: <><path d="M14.5 5.5l4 4M4 20l1-4 11-11 3 3-11 11z" {...p} /></>,
     refresh: <><path d="M20 11a8 8 0 1 0-.6 4" {...p} /><path d="M20 4v5h-5" {...p} /></>,
     trash: <><path d="M5 7h14M10 7V5h4v2M6 7l1 13h10l1-13" {...p} /></>,
+    gear: <><circle cx="12" cy="12" r="3.2" {...p} /><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" {...p} /></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -188,6 +193,7 @@ export default function App() {
     const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
       _uid = s?.user?.id || null;
       setSession(s);
+      setScreen("home"); // ログイン/ログアウト時はホームに戻す
       if (!s) {
         setLoaded(false);
         setBeans([]); setGrinders([]); setDrippers([]); setFavorites([]); setLogs([]); setProposed(null); setProfile(null);
@@ -279,9 +285,9 @@ export default function App() {
       beanName: preset?.beanName || "", grinderName: preset?.grinderName || "", dripperName: preset?.dripperName || "",
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
       grind: preset?.grind || 20, pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
-      taste: preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
-      flavorBig: preset?.flavorBig || "", flavorSmall: preset?.flavorSmall || "", memo: preset?.memo || "",
-      satisfaction: preset?.satisfaction || 3, createdAt: preset?.createdAt || Date.now(),
+      taste: editId ? (preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 }) : { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
+      flavorBig: editId ? (preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
+      satisfaction: editId ? (preset?.satisfaction || 3) : 3, createdAt: editId ? (preset?.createdAt || Date.now()) : Date.now(),
       chat: editId ? (preset?.chat || []) : [], nextRecipe: editId ? (preset?.nextRecipe || null) : null,
     });
     setScreen(step);
@@ -664,11 +670,19 @@ function BeanSummary({ logs, openLog, tab, setTab }) {
       if (!prev || pv == null || cur == null || pv === cur) return null;
       return cur > pv ? "up" : "down";
     };
+    // 味の変化（前回から動いた軸だけを一文字略で）
+    const TASTE_SHORT = { 酸味: "酸", 苦味: "苦", 甘味: "甘", コク: "コク", 濃度感: "濃" };
+    const tasteChanges = prev ? Object.keys(TASTE_SHORT).map(ax => {
+      const cur = l.taste?.[ax], pv = prev.taste?.[ax];
+      if (cur == null || pv == null || cur === pv) return null;
+      return { label: TASTE_SHORT[ax], dir: cur > pv ? "up" : "down" };
+    }).filter(Boolean) : [];
     return {
       n: l._n, date: new Date(l.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }),
       grind: l.grind, grindDir: diff(l.grind, prev?.grind),
       temp: l.temp, tempDir: diff(l.temp, prev?.temp),
       pourCount, pourDir: prev ? diff(pourCount, prevPourCount) : null,
+      tasteChanges,
       satisfaction: l.satisfaction, satDir: diff(l.satisfaction, prev?.satisfaction),
       id: l.id,
     };
@@ -749,31 +763,47 @@ function BeanSummary({ logs, openLog, tab, setTab }) {
 
         {tab === "trail" && (
           <>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>▲▼は前回からの変化。テラコッタ色は変化あり。</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>▲▼は前回からの変化。<span style={{ color: "var(--terra)" }}>▲上がった</span> / <span style={{ color: "#5b9bd5" }}>▼下がった</span>。味は酸=酸味 苦=苦味 甘=甘味 濃=濃度感。</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
                 <thead>
+                  <tr>
+                    <th style={{ padding: "2px 6px" }}></th>
+                    <th colSpan={3} style={{ padding: "4px 6px", textAlign: "center", fontSize: 10.5, fontWeight: 700, color: "var(--muted)", letterSpacing: ".05em" }}>調整した項目</th>
+                    <th colSpan={2} style={{ padding: "4px 6px", textAlign: "center", fontSize: 10.5, fontWeight: 700, color: "var(--terra)", letterSpacing: ".05em", borderLeft: "2px solid var(--line)", background: "rgba(179,85,47,.05)" }}>結果</th>
+                  </tr>
                   <tr style={{ borderBottom: "1.5px solid var(--line)" }}>
-                    {["回", "日付", "粒度", "湯温", "投数", "満足度"].map(h => (
-                      <th key={h} style={{ padding: "6px 8px", textAlign: "center", color: "var(--muted)", fontWeight: 700, whiteSpace: "nowrap" }}>{h}</th>
-                    ))}
+                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700, whiteSpace: "nowrap" }}>回</th>
+                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700 }}>粒度</th>
+                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700 }}>湯温</th>
+                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700 }}>投数</th>
+                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700, borderLeft: "2px solid var(--line)", background: "rgba(179,85,47,.05)" }}>味の変化</th>
+                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700, background: "rgba(179,85,47,.05)" }}>満足度</th>
                   </tr>
                 </thead>
                 <tbody>
                   {trailData.map((r, i) => (
                     <tr key={r.id} onClick={() => openLog(r.id)} style={{ borderBottom: "1px solid var(--line)", cursor: "pointer", background: i % 2 === 0 ? "transparent" : "rgba(227,216,200,.2)" }}>
-                      <td style={{ padding: "8px", textAlign: "center", color: "var(--muted)" }}>{r.n}</td>
-                      <td style={{ padding: "8px", textAlign: "center", color: "var(--muted)", whiteSpace: "nowrap" }}>{r.date}</td>
-                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.grindDir ? 700 : 400, color: r.grindDir ? "var(--terra)" : "var(--espresso)" }}>
+                      <td style={{ padding: "8px 6px", textAlign: "center", color: "var(--muted)" }}>{r.n}</td>
+                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.grindDir ? 700 : 400, color: r.grindDir ? "var(--terra)" : "var(--espresso)" }}>
                         {r.grind}<DirBadge dir={r.grindDir} />
                       </td>
-                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.tempDir ? 700 : 400, color: r.tempDir ? "var(--terra)" : "var(--espresso)" }}>
+                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.tempDir ? 700 : 400, color: r.tempDir ? "var(--terra)" : "var(--espresso)" }}>
                         {r.temp}℃<DirBadge dir={r.tempDir} />
                       </td>
-                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.pourDir ? 700 : 400, color: r.pourDir ? "var(--terra)" : "var(--espresso)" }}>
-                        {r.pourCount}投<DirBadge dir={r.pourDir} />
+                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.pourDir ? 700 : 400, color: r.pourDir ? "var(--terra)" : "var(--espresso)" }}>
+                        {r.pourCount}<DirBadge dir={r.pourDir} />
                       </td>
-                      <td style={{ padding: "8px", textAlign: "center", fontWeight: r.satDir ? 700 : 400, color: r.satDir ? "var(--terra)" : "var(--espresso)" }}>
+                      <td style={{ padding: "8px 6px", textAlign: "center", whiteSpace: "nowrap", minWidth: 54, borderLeft: "2px solid var(--line)", background: "rgba(179,85,47,.04)" }}>
+                        {r.tasteChanges.length === 0
+                          ? <span style={{ color: "var(--line)" }}>—</span>
+                          : <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "center" }}>
+                              {r.tasteChanges.map((c, j) => (
+                                <span key={j} style={{ fontSize: 11.5, fontWeight: 700, color: c.dir === "up" ? "var(--terra)" : "#5b9bd5" }}>{c.label}{c.dir === "up" ? "▲" : "▼"}</span>
+                              ))}
+                            </span>}
+                      </td>
+                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.satDir ? 700 : 400, background: "rgba(179,85,47,.04)" }}>
                         <SatDot v={r.satisfaction} />
                       </td>
                     </tr>
@@ -1699,13 +1729,113 @@ function Auth() {
 
 // ====== プロフィール ======
 function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
-  const [editing, setEditing] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const notify = useContext(ToastCtx);
+
+  const cups = logs.length;
+  const avg = cups ? (logs.reduce((s, l) => s + (l.satisfaction || 0), 0) / cups) : 0;
+  const since = profile?.since ? new Date(profile.since).toLocaleDateString("ja-JP", { year: "numeric", month: "long" }) : "";
+  const emoji = profile?.avatarEmoji || "";
+  const color = profile?.avatarColor || "#4a3424";
+
+  const stat = (label, value) => (
+    <div style={{ flex: 1, background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: "14px 10px", textAlign: "center" }}>
+      <div className="cd-serif" style={{ fontSize: 22, fontWeight: 700, color: "var(--bean)" }}>{value}</div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{label}</div>
+    </div>
+  );
+
+  const Avatar = ({ size = 72 }) => (
+    <div style={{ width: size, height: size, borderRadius: "50%", background: emoji ? color : `linear-gradient(155deg,var(--bean),var(--espresso))`, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: emoji ? size * 0.5 : size * 0.4, fontWeight: 700, flexShrink: 0 }} className={emoji ? "" : "cd-serif"}>
+      {emoji || (profile?.name || "?").slice(0, 1)}
+    </div>
+  );
+
+  return (
+    <div className="cd-fade">
+      {/* ヘッダー（見せる部分） */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", marginBottom: 22 }}>
+        <Avatar size={80} />
+        <div className="cd-serif" style={{ fontSize: 22, fontWeight: 700, marginTop: 12 }}>{profile?.name || "名称未設定"}</div>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 3 }}>{since} から記録中</div>
+        <button onClick={() => setEditOpen(true)} style={{ marginTop: 14, background: "none", border: "1.5px solid var(--line)", color: "var(--mocha)", fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "8px 20px", borderRadius: 20, fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>プロフィールを編集</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
+        {stat("淹れた杯数", cups)}
+        {stat("平均満足度", cups ? `${avg.toFixed(1)}★` : "—")}
+      </div>
+      <div style={{ display: "flex", gap: 10, marginBottom: 22 }}>
+        {stat("登録した豆", beans.length)}
+        {stat("定番レシピ", favorites.length)}
+      </div>
+
+      <TasteProfile logs={logs} beans={beans} />
+
+      {/* 設定への導線（控えめ） */}
+      <button onClick={() => setSettingsOpen(true)} style={{ width: "100%", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: "15px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10, fontSize: 14, fontWeight: 700, color: "var(--espresso)" }}><Icon name="gear" size={18} />設定</span>
+        <span style={{ color: "var(--muted)", fontSize: 18 }}>›</span>
+      </button>
+
+      <Btn kind="ghost" onClick={onLogout} style={{ width: "100%", marginTop: 14 }}>ログアウト</Btn>
+
+      {editOpen && <ProfileEditModal profile={profile} saveProfile={saveProfile} onClose={() => setEditOpen(false)} notify={notify} />}
+      {settingsOpen && <SettingsModal email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
+    </div>
+  );
+}
+
+// プロフィール編集（名前・アイコン絵文字・背景色）
+function ProfileEditModal({ profile, saveProfile, onClose, notify }) {
   const [name, setName] = useState(profile?.name || "");
+  const [emoji, setEmoji] = useState(profile?.avatarEmoji || "");
+  const [color, setColor] = useState(profile?.avatarColor || "#4a3424");
+
+  const save = () => {
+    saveProfile({ ...profile, name: name.trim() || "名称未設定", avatarEmoji: emoji, avatarColor: color });
+    notify("プロフィールを更新しました");
+    onClose();
+  };
+
+  return (
+    <ModalShell title="プロフィールを編集" onClose={onClose}>
+      <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+        <div style={{ width: 84, height: 84, borderRadius: "50%", background: emoji ? color : "linear-gradient(155deg,var(--bean),var(--espresso))", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: emoji ? 42 : 34, fontWeight: 700 }} className={emoji ? "" : "cd-serif"}>{emoji || (name || "?").slice(0, 1)}</div>
+      </div>
+
+      <Field label="ユーザー名"><input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="名前" maxLength={20} /></Field>
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "14px 0 8px" }}>アイコン</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+        <button onClick={() => setEmoji("")} title="イニシャル" style={{ width: 42, height: 42, borderRadius: "50%", border: emoji === "" ? "2.5px solid var(--terra)" : "1.5px solid var(--line)", background: "linear-gradient(155deg,var(--bean),var(--espresso))", color: "#fff", cursor: "pointer", fontWeight: 700, fontSize: 15 }} className="cd-serif">{(name || "?").slice(0, 1)}</button>
+        {AVATAR_EMOJIS.map(em => (
+          <button key={em} onClick={() => setEmoji(em)} style={{ width: 42, height: 42, borderRadius: "50%", border: emoji === em ? "2.5px solid var(--terra)" : "1.5px solid var(--line)", background: "var(--cream)", cursor: "pointer", fontSize: 21 }}>{em}</button>
+        ))}
+      </div>
+
+      {emoji && <>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "14px 0 8px" }}>背景色</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+          {AVATAR_COLORS.map(c => (
+            <button key={c} onClick={() => setColor(c)} style={{ width: 38, height: 38, borderRadius: "50%", border: color === c ? "3px solid var(--terra)" : "2px solid var(--paper)", background: c, cursor: "pointer", boxShadow: "0 0 0 1px var(--line)" }} />
+          ))}
+        </div>
+      </>}
+
+      <Btn onClick={save} style={{ width: "100%", marginTop: 18 }}>保存する</Btn>
+    </ModalShell>
+  );
+}
+
+// 設定（アカウント・ログアウト・削除）
+function SettingsModal({ email, onClose, onRequestDeleteAccount }) {
+  const [mode, setMode] = useState(null); // null | email | pw
   const [newEmail, setNewEmail] = useState("");
   const [newPw, setNewPw] = useState("");
   const [acctMsg, setAcctMsg] = useState("");
   const [busy, setBusy] = useState(false);
-  const notify = useContext(ToastCtx);
 
   const acctErr = (m) => {
     const s = String(m || "");
@@ -1723,7 +1853,7 @@ function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout
       const { error } = await supabase.auth.updateUser({ email: newEmail.trim() });
       if (error) throw error;
       setAcctMsg("確認メールを送信しました。新しいメールアドレスに届いたリンクを開くと変更が完了します。");
-      setNewEmail("");
+      setNewEmail(""); setMode(null);
     } catch (e) { setAcctMsg(acctErr(e?.message)); }
     setBusy(false);
   };
@@ -1734,86 +1864,77 @@ function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout
       const { error } = await supabase.auth.updateUser({ password: newPw });
       if (error) throw error;
       setAcctMsg("パスワードを変更しました。");
-      setNewPw("");
+      setNewPw(""); setMode(null);
     } catch (e) { setAcctMsg(acctErr(e?.message)); }
     setBusy(false);
   };
 
-  const cups = logs.length;
-  const avg = cups ? (logs.reduce((s, l) => s + (l.satisfaction || 0), 0) / cups) : 0;
-  // 一番よく淹れた豆
-  const counts = {};
-  logs.forEach(l => { const n = beans.find(b => b.id === l.beanId)?.name || l.beanName; if (n) counts[n] = (counts[n] || 0) + 1; });
-  const topBean = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "—";
-  const since = profile?.since ? new Date(profile.since).toLocaleDateString("ja-JP", { year: "numeric", month: "long" }) : "";
-
-  const stat = (label, value) => (
-    <div style={{ flex: 1, background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: "14px 10px", textAlign: "center" }}>
-      <div className="cd-serif" style={{ fontSize: 22, fontWeight: 700, color: "var(--bean)" }}>{value}</div>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3 }}>{label}</div>
-    </div>
+  const row = (label, value, onClick) => (
+    <button onClick={onClick} style={{ width: "100%", background: "none", border: "none", borderBottom: "1px solid var(--line)", padding: "14px 2px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>
+      <span style={{ fontSize: 13.5, color: "var(--espresso)", fontWeight: 600 }}>{label}</span>
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "var(--muted)" }}>{value}<span style={{ fontSize: 16 }}>›</span></span>
+    </button>
   );
 
   return (
-    <div className="cd-fade">
-      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 22 }}>
-        <div style={{ width: 64, height: 64, borderRadius: "50%", background: "linear-gradient(155deg,var(--bean),var(--espresso))", color: "var(--cream)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, fontWeight: 700, flexShrink: 0 }} className="cd-serif">{(profile?.name || "?").slice(0, 1)}</div>
-        <div style={{ flex: 1 }}>
-          {editing ? (
-            <div style={{ display: "flex", gap: 8 }}>
-              <input style={{ ...inputStyle, flex: 1, padding: "8px 11px" }} value={name} onChange={e => setName(e.target.value)} />
-              <Btn disabled={!name.trim()} onClick={() => { saveProfile({ ...profile, name: name.trim() }); setEditing(false); notify("変更を保存しました"); }} style={{ padding: "9px 14px", fontSize: 13 }}>保存</Btn>
-            </div>
-          ) : (
-            <>
-              <div className="cd-serif" style={{ fontSize: 20, fontWeight: 700 }}>{profile?.name}</div>
-              <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>{since} から記録中</div>
-            </>
-          )}
+    <ModalShell title="設定" onClose={onClose}>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "2px 0 4px", letterSpacing: ".04em" }}>アカウント</div>
+
+      {mode === null && (
+        <>
+          {row("メールアドレス", (email || "").length > 18 ? (email.slice(0, 16) + "…") : email, () => { setMode("email"); setAcctMsg(""); })}
+          {row("パスワード", "変更", () => { setMode("pw"); setAcctMsg(""); })}
+        </>
+      )}
+
+      {mode === "email" && (
+        <div className="cd-fade">
+          <Field label="新しいメールアドレス">
+            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>現在：{email}</div>
+            <input style={inputStyle} type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="new@example.com" />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <Btn kind="ghost" onClick={() => { setMode(null); setAcctMsg(""); }} style={{ flex: 1 }}>戻る</Btn>
+            <Btn disabled={busy || !newEmail.trim()} onClick={changeEmail} style={{ flex: 1 }}>更新</Btn>
+          </div>
         </div>
-        {!editing && <button onClick={() => { setName(profile?.name || ""); setEditing(true); }} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>編集</button>}
-      </div>
+      )}
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
-        {stat("淹れた杯数", cups)}
-        {stat("平均満足度", cups ? `${avg.toFixed(1)}★` : "—")}
-      </div>
-      <div style={{ display: "flex", gap: 10, marginBottom: 22 }}>
-        {stat("登録した豆", beans.length)}
-        {stat("定番レシピ", favorites.length)}
-      </div>
+      {mode === "pw" && (
+        <div className="cd-fade">
+          <Field label="新しいパスワード（6文字以上）">
+            <input style={inputStyle} type="password" autoComplete="new-password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="••••••••" />
+          </Field>
+          <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+            <Btn kind="ghost" onClick={() => { setMode(null); setAcctMsg(""); }} style={{ flex: 1 }}>戻る</Btn>
+            <Btn disabled={busy || newPw.length < 6} onClick={changePw} style={{ flex: 1 }}>更新</Btn>
+          </div>
+        </div>
+      )}
 
-      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 24 }}>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>よく淹れる豆</div>
-        <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700 }}>{topBean}</div>
-      </div>
+      {acctMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 12, lineHeight: 1.7 }}>{acctMsg}</div>}
 
-      <TasteProfile logs={logs} beans={beans} />
+      {mode === null && (
+        <div style={{ borderTop: "1px solid var(--line)", marginTop: 24, paddingTop: 18 }}>
+          <button onClick={onRequestDeleteAccount} style={{ width: "100%", background: "none", border: "1.5px solid var(--danger)", color: "var(--danger)", fontWeight: 700, fontSize: 13.5, padding: "12px", borderRadius: 12, cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>アカウントを削除する</button>
+          <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 10, lineHeight: 1.7 }}>アカウントとすべての記録が削除され、元に戻せません。</div>
+        </div>
+      )}
+    </ModalShell>
+  );
+}
 
-      {/* アカウント設定 */}
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 10 }}>アカウント設定</div>
-      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 14 }}>
-        <Field label="メールアドレス">
-          <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 6 }}>現在：{email}</div>
-          <input style={inputStyle} type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="新しいメールアドレス" />
-        </Field>
-        <Btn kind="soft" disabled={busy || !newEmail.trim()} onClick={changeEmail} style={{ width: "100%", marginTop: 4, marginBottom: 18 }}>メールアドレスを更新</Btn>
-
-        <Field label="パスワード（6文字以上）">
-          <input style={inputStyle} type="password" autoComplete="new-password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="新しいパスワード" />
-        </Field>
-        <Btn kind="soft" disabled={busy || newPw.length < 6} onClick={changePw} style={{ width: "100%", marginTop: 4 }}>パスワードを更新</Btn>
-
-        {acctMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 12, lineHeight: 1.7 }}>{acctMsg}</div>}
-      </div>
-
-      <Btn kind="ghost" onClick={onLogout} style={{ width: "100%", marginBottom: 18 }}>ログアウト</Btn>
-      <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginBottom: 24, lineHeight: 1.7 }}>ログアウトしても、記録はアカウントに保存されています。</div>
-
-      {/* アカウント削除 */}
-      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 18 }}>
-        <button onClick={onRequestDeleteAccount} style={{ width: "100%", background: "none", border: "1.5px solid var(--danger)", color: "var(--danger)", fontWeight: 700, fontSize: 13.5, padding: "12px", borderRadius: 12, cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>アカウントを削除する</button>
-        <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 10, lineHeight: 1.7 }}>アカウントとすべての記録が削除され、元に戻せません。</div>
+// 下からせり上がるモーダルの外枠
+function ModalShell({ title, onClose, children }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(44,30,21,.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={e => e.stopPropagation()} className="cd-sheet" style={{ background: "var(--cream)", borderRadius: "22px 22px 0 0", padding: "10px 22px 32px", width: "100%", maxWidth: 480, maxHeight: "88vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "center", padding: "6px 0 14px" }}><div style={{ width: 40, height: 4, borderRadius: 2, background: "var(--line)" }} /></div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div className="cd-serif" style={{ fontSize: 18, fontWeight: 700 }}>{title}</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>閉じる</button>
+        </div>
+        {children}
       </div>
     </div>
   );
