@@ -404,6 +404,88 @@ function Header({ screen, setScreen, detailFrom, editing }) {
 }
 
 // ====== ホーム ======
+// ====== 継続の見える化（ストリーク・カレンダー・バッジ）======
+const dayKey = (d) => new Date(d).toLocaleDateString("sv-SE"); // YYYY-MM-DD（ローカル）
+
+function ProgressSection({ logs, beans, openLog }) {
+  const now = new Date();
+  const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
+
+  const byDay = {};
+  logs.forEach(l => { const k = dayKey(l.createdAt); (byDay[k] ||= []).push(l); });
+
+  const streak = (() => {
+    const set = new Set(Object.keys(byDay));
+    let s = 0; const c = new Date();
+    if (!set.has(dayKey(Date.now()))) c.setDate(c.getDate() - 1);
+    while (set.has(dayKey(c))) { s++; c.setDate(c.getDate() - 1); }
+    return s;
+  })();
+
+  const monthLogs = logs.filter(l => { const d = new Date(l.createdAt); return d.getFullYear() === ym.y && d.getMonth() === ym.m; });
+  const monthDays = new Set(monthLogs.map(l => dayKey(l.createdAt))).size;
+
+  const first = new Date(ym.y, ym.m, 1);
+  const startWd = first.getDay();
+  const daysInMonth = new Date(ym.y, ym.m + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < startWd; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  const cupColor = (n) => n <= 0 ? "transparent" : n === 1 ? "rgba(179,85,47,.3)" : n === 2 ? "rgba(179,85,47,.6)" : "var(--terra)";
+  const todayK = dayKey(Date.now());
+  const monthLabel = `${ym.y}年${ym.m + 1}月`;
+  const shiftMonth = (delta) => { const d = new Date(ym.y, ym.m + delta, 1); setYm({ y: d.getFullYear(), m: d.getMonth() }); };
+  const isCurMonth = ym.y === now.getFullYear() && ym.m === now.getMonth();
+
+  const wd = ["日", "月", "火", "水", "木", "金", "土"];
+
+  return (
+    <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 18, padding: 18, marginBottom: 22 }}>
+      <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+        <div style={{ flex: 1, textAlign: "center" }}>
+          <div className="cd-serif" style={{ fontSize: 24, fontWeight: 700, color: "var(--terra)" }}>{streak}<span style={{ fontSize: 12, marginLeft: 2 }}>日</span></div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>連続記録{streak >= 2 ? " 🔥" : ""}</div>
+        </div>
+        <div style={{ width: 1, background: "var(--line)" }} />
+        <div style={{ flex: 1, textAlign: "center" }}>
+          <div className="cd-serif" style={{ fontSize: 24, fontWeight: 700, color: "var(--bean)" }}>{monthDays}<span style={{ fontSize: 12, marginLeft: 2 }}>日</span></div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>今月の記録日</div>
+        </div>
+        <div style={{ width: 1, background: "var(--line)" }} />
+        <div style={{ flex: 1, textAlign: "center" }}>
+          <div className="cd-serif" style={{ fontSize: 24, fontWeight: 700, color: "var(--bean)" }}>{monthLogs.length}<span style={{ fontSize: 12, marginLeft: 2 }}>杯</span></div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>今月の杯数</div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <button onClick={() => shiftMonth(-1)} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 18, cursor: "pointer", padding: "2px 8px" }}>‹</button>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--bean)" }}>{monthLabel}</div>
+        <button onClick={() => shiftMonth(1)} disabled={isCurMonth} style={{ background: "none", border: "none", color: isCurMonth ? "var(--line)" : "var(--mocha)", fontSize: 18, cursor: isCurMonth ? "default" : "pointer", padding: "2px 8px" }}>›</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4 }}>
+        {wd.map((w, i) => <div key={w} style={{ textAlign: "center", fontSize: 10, color: i === 0 ? "#c0392b" : i === 6 ? "#5b9bd5" : "var(--muted)", paddingBottom: 2 }}>{w}</div>)}
+        {cells.map((d, i) => {
+          if (d === null) return <div key={i} />;
+          const k = dayKey(new Date(ym.y, ym.m, d));
+          const cups = byDay[k]?.length || 0;
+          const isToday = k === todayK;
+          return (
+            <div key={i} onClick={() => cups && openLog(byDay[k][0].id)} style={{ aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", cursor: cups ? "pointer" : "default" }}>
+              <div style={{ width: "74%", aspectRatio: "1", display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "50%", fontSize: 11, background: cupColor(cups), color: cups >= 3 ? "#fff" : cups >= 1 ? "var(--espresso)" : "var(--muted)", border: isToday ? "1.5px solid var(--bean)" : "1px solid transparent", fontWeight: cups ? 700 : 400 }}>{d}</div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5 }}>
+        少<span style={{ width: 11, height: 11, borderRadius: "50%", background: "rgba(179,85,47,.3)" }} /><span style={{ width: 11, height: 11, borderRadius: "50%", background: "rgba(179,85,47,.6)" }} /><span style={{ width: 11, height: 11, borderRadius: "50%", background: "var(--terra)" }} />多
+      </div>
+    </div>
+  );
+}
+
+// ====== ホーム ======
 function Home({ beans, logs, proposed, startRecord, setScreen, openLog }) {
   const beanOf = (id) => beans.find(b => b.id === id);
   return (
@@ -427,6 +509,7 @@ function Home({ beans, logs, proposed, startRecord, setScreen, openLog }) {
           <Btn onClick={() => startRecord()}>淹れる</Btn>
         </div>
       )}
+      {logs.length > 0 && <ProgressSection logs={logs} beans={beans} openLog={openLog} />}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
         <div className="cd-serif" style={{ fontSize: 15, fontWeight: 700, color: "var(--bean)" }}>最近の一杯</div>
         {logs.length > 3 && <button onClick={() => setScreen("history")} style={{ background: "none", border: "none", color: "var(--terra)", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>日記を見る ›</button>}
@@ -1230,6 +1313,7 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
   };
   const [showFav, setShowFav] = useState(false);
   const [favOpen, setFavOpen] = useState(null);
+  const [confirmDelFav, setConfirmDelFav] = useState(null);
   const [naming, setNaming] = useState(false);
   const [favName, setFavName] = useState("");
   const [dripText, setDripText] = useState(!!value.dripperName);
@@ -1262,6 +1346,7 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
     if (!favName.trim()) return;
     saveFavorites([{ id: uid(), name: favName.trim(), grounds: value.grounds, water: value.water, temp: value.temp, grinderId: value.grinderId, dripperId: value.dripperId, grinderName: value.grinderName || "", dripperName: value.dripperName || "", grind: value.grind, pours: pours.map(p => ({ ...p })) }, ...favorites]);
     setFavName(""); setNaming(false);
+    notify("定番レシピに登録しました");
   };
   let cum = 0;
   return (
@@ -1287,8 +1372,18 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
                         <div style={{ fontWeight: 700, fontSize: 14 }}>{f.name}</div>
                         <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>粉{f.grounds}g / 湯{f.water}ml（1:{(f.water / f.grounds).toFixed(1)}）/ {f.temp}℃{(d?.name || f.dripperName) ? ` / ${d?.name || f.dripperName}` : ""}</div>
                       </div>
-                      <button onClick={() => setFavOpen(open ? null : f.id)} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{open ? "詳細 ▲" : "詳細 ▼"}</button>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                        <button onClick={() => setFavOpen(open ? null : f.id)} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>{open ? "詳細 ▲" : "詳細 ▼"}</button>
+                        <button onClick={() => setConfirmDelFav(confirmDelFav === f.id ? null : f.id)} title="削除" style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", display: "inline-flex", padding: 2 }}><Icon name="trash" size={15} /></button>
+                      </div>
                     </div>
+                    {confirmDelFav === f.id && (
+                      <div className="cd-fade" style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 8, fontSize: 12.5 }}>
+                        <span style={{ color: "var(--muted)", marginRight: "auto" }}>このレシピを削除しますか？</span>
+                        <button onClick={() => setConfirmDelFav(null)} style={{ background: "none", border: "1px solid var(--line)", color: "var(--mocha)", fontWeight: 700, borderRadius: 8, padding: "5px 12px", cursor: "pointer" }}>やめる</button>
+                        <button onClick={() => { saveFavorites(favorites.filter(x => x.id !== f.id)); if (favOpen === f.id) setFavOpen(null); setConfirmDelFav(null); notify("定番レシピを削除しました"); }} style={{ background: "var(--danger)", border: "none", color: "#fff", fontWeight: 700, borderRadius: 8, padding: "5px 12px", cursor: "pointer" }}>削除する</button>
+                      </div>
+                    )}
                     {open && (
                       <div className="cd-fade" style={{ background: "var(--cream)", borderRadius: 10, padding: "8px 10px", margin: "8px 0" }}>
                         <div style={{ fontSize: 11.5, color: "var(--mocha)", marginBottom: 4 }}>{g?.name || f.grinderName || "ミル"} {f.grind}クリック</div>
@@ -1303,7 +1398,6 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
                   </div>
                 );
               })}
-              <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", paddingTop: 8, display: favorites.length ? "block" : "none" }}>削除はMy棚の「レシピ」から行えます</div>
             </div>
           )}
           {naming && (
