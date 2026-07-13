@@ -330,8 +330,8 @@ export default function App() {
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
         {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
-        {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} setScreen={setScreen} />}
-        {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
+        {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
+        {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
         {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
           onSave={(d) => saveDraftAsLog(d)} />}
@@ -1040,6 +1040,7 @@ function Equipment({ items, save, kind }) {
 // ====== 豆カルテ ======
 function Beans({ beans, saveBeans }) {
   const [editing, setEditing] = useState(null);
+  const [showArchived, setShowArchived] = useState(false);
   const notify = useContext(ToastCtx);
   const blank = { id: "", name: "", origin: "", variety: "", process: "", roastDate: "", roastLevel: "中煎り", shop: "", roasterNote: "" };
   if (editing) {
@@ -1065,73 +1066,168 @@ function Beans({ beans, saveBeans }) {
           <Btn kind="ghost" onClick={() => setEditing(null)} style={{ flex: 1 }}>キャンセル</Btn>
           <Btn disabled={!e.name.trim()} style={{ flex: 2 }} onClick={() => {
             if (e.id) { saveBeans(beans.map(b => b.id === e.id ? e : b)); notify("変更を保存しました"); }
-            else { saveBeans([{ ...e, id: uid() }, ...beans]); notify("My棚に追加しました"); }
+            else { saveBeans([{ ...e, id: uid(), createdAt: Date.now() }, ...beans]); notify("My棚に追加しました"); }
             setEditing(null);
           }}>保存する</Btn>
         </div>
       </div>
     );
   }
+  const fmtBeanDate = (b) => {
+    if (b.roastDate) return `焙煎日 ${new Date(b.roastDate).toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric" })}`;
+    if (b.createdAt) return `登録 ${new Date(b.createdAt).toLocaleDateString("ja-JP", { year: "numeric", month: "long", day: "numeric" })}`;
+    return "";
+  };
+  const activeBeans = beans.filter(b => !b.archived);
+  const archivedBeans = beans.filter(b => b.archived);
+
+  const BeanCard = ({ b, archived }) => (
+    <div key={b.id} onClick={() => setEditing(b)} style={{ background: "var(--paper)", borderRadius: 16, padding: 16, marginBottom: 10, cursor: "pointer", opacity: archived ? 0.66 : 1 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+        <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700, flex: 1 }}>{b.name}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <div style={{ fontSize: 11, color: "#fff", background: "var(--mocha)", padding: "3px 9px", borderRadius: 20 }}>{b.roastLevel}</div>
+          <CardMenu items={[
+            { label: "編集", onClick: () => setEditing(b) },
+            archived
+              ? { label: "使用中に戻す", onClick: () => { saveBeans(beans.map(x => x.id === b.id ? { ...x, archived: false } : x)); notify("使用中に戻しました"); } }
+              : { label: "アーカイブ", onClick: () => { saveBeans(beans.map(x => x.id === b.id ? { ...x, archived: true } : x)); notify("アーカイブしました"); } },
+            { label: "削除", danger: true, onClick: () => { saveBeans(beans.filter(x => x.id !== b.id)); notify("My棚から削除しました"); } },
+          ]} />
+        </div>
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>{[b.origin, b.process].filter(Boolean).join(" · ")}</div>
+      {fmtBeanDate(b) && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtBeanDate(b)}</div>}
+      {b.roasterNote && <div style={{ fontSize: 12.5, color: "var(--mocha)", marginTop: 8, fontStyle: "italic" }}>“{b.roasterNote}”</div>}
+    </div>
+  );
+
   return (
     <div className="cd-fade">
       <Btn onClick={() => setEditing(blank)} style={{ width: "100%", marginBottom: 18 }}>＋ 豆を追加</Btn>
-      {beans.map(b => (
-        <div key={b.id} onClick={() => setEditing(b)} style={{ background: "var(--paper)", borderRadius: 16, padding: 16, marginBottom: 10, cursor: "pointer" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
-            <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700, flex: 1 }}>{b.name}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <div style={{ fontSize: 11, color: "#fff", background: "var(--mocha)", padding: "3px 9px", borderRadius: 20 }}>{b.roastLevel}</div>
-              <CardMenu items={[{ label: "編集", onClick: () => setEditing(b) }, { label: "削除", danger: true, onClick: () => { saveBeans(beans.filter(x => x.id !== b.id)); notify("My棚から削除しました"); } }]} />
-            </div>
-          </div>
-          <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>{[b.origin, b.process].filter(Boolean).join(" · ")}</div>
-          {b.roasterNote && <div style={{ fontSize: 12.5, color: "var(--mocha)", marginTop: 8, fontStyle: "italic" }}>“{b.roasterNote}”</div>}
+      {activeBeans.length === 0 && archivedBeans.length === 0 && <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: 20 }}>まだ豆が登録されていません。</div>}
+      {activeBeans.map(b => <BeanCard key={b.id} b={b} archived={false} />)}
+
+      {archivedBeans.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => setShowArchived(v => !v)} style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 4px", cursor: "pointer", color: "var(--muted)", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700 }}>アーカイブした豆（{archivedBeans.length}）</span>
+            <span style={{ fontSize: 13, transform: showArchived ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▾</span>
+          </button>
+          {showArchived && <div className="cd-fade">{archivedBeans.map(b => <BeanCard key={b.id} b={b} archived={true} />)}</div>}
         </div>
-      ))}
+      )}
     </div>
   );
 }
 
 // ====== STEP1 豆選択 ======
-function Rec1({ draft, setDraft, beans, setScreen }) {
+function Rec1({ draft, setDraft, beans, saveBeans, setScreen }) {
+  const [showArchived, setShowArchived] = useState(false);
+  const [quickAdd, setQuickAdd] = useState(false);
+  const notify = useContext(ToastCtx);
+  const activeBeans = beans.filter(b => !b.archived || b.id === draft.beanId);
+  const archivedBeans = beans.filter(b => b.archived && b.id !== draft.beanId);
+
+  const BeanRow = (b) => {
+    const sel = draft.beanId === b.id;
+    return (
+      <div key={b.id} onClick={() => setDraft({ ...draft, beanId: b.id, beanName: "" })}
+        style={{ display: "flex", alignItems: "center", gap: 12, background: sel ? "var(--bean)" : "var(--paper)", color: sel ? "var(--cream)" : "var(--espresso)", borderRadius: 16, padding: 16, marginBottom: 10, cursor: "pointer", border: sel ? "1.5px solid var(--bean)" : "1.5px solid var(--line)", transition: "all .15s" }}>
+        <div style={{ flex: 1 }}>
+          <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700 }}>{b.name}</div>
+          <div style={{ fontSize: 12.5, opacity: .8, marginTop: 3 }}>{[b.origin, b.roastLevel].filter(Boolean).join(" · ")}</div>
+        </div>
+        <div style={{ width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: sel ? "var(--crema)" : "transparent", border: sel ? "none" : "2px solid var(--line)", color: "var(--espresso)" }}>
+          {sel && <Icon name="check" size={15} />}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="cd-fade">
       <StepDots n={1} />
-      {beans.map(b => {
-        const sel = draft.beanId === b.id;
-        return (
-          <div key={b.id} onClick={() => setDraft({ ...draft, beanId: b.id, beanName: "" })}
-            style={{ display: "flex", alignItems: "center", gap: 12, background: sel ? "var(--bean)" : "var(--paper)", color: sel ? "var(--cream)" : "var(--espresso)", borderRadius: 16, padding: 16, marginBottom: 10, cursor: "pointer", border: sel ? "1.5px solid var(--bean)" : "1.5px solid var(--line)", transition: "all .15s" }}>
-            <div style={{ flex: 1 }}>
-              <div className="cd-serif" style={{ fontSize: 16, fontWeight: 700 }}>{b.name}</div>
-              <div style={{ fontSize: 12.5, opacity: .8, marginTop: 3 }}>{[b.origin, b.roastLevel].filter(Boolean).join(" · ")}</div>
-            </div>
-            <div style={{ width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: sel ? "var(--crema)" : "transparent", border: sel ? "none" : "2px solid var(--line)", color: "var(--espresso)" }}>
-              {sel && <Icon name="check" size={15} />}
-            </div>
-          </div>
-        );
-      })}
+      {activeBeans.map(BeanRow)}
+
+      {/* 新しい豆を登録 */}
+      <button onClick={() => setQuickAdd(true)} style={{ width: "100%", background: "var(--paper)", border: "1.5px dashed var(--line)", borderRadius: 16, padding: 14, marginBottom: 10, cursor: "pointer", color: "var(--mocha)", fontSize: 13.5, fontWeight: 700, fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>＋ 新しい豆を登録</button>
+
+      {/* その他（登録せず今回だけ手入力） */}
       <div style={{ background: draft.beanName?.trim() ? "var(--bean)" : "var(--paper)", borderRadius: 16, padding: 14, marginBottom: 10, border: draft.beanName?.trim() ? "1.5px solid var(--bean)" : "1.5px dashed var(--line)", transition: "all .15s" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: draft.beanName?.trim() ? "var(--cream)" : "var(--mocha)", marginBottom: 6 }}>その他</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: draft.beanName?.trim() ? "var(--cream)" : "var(--mocha)", marginBottom: 6 }}>その他（今回だけ）</div>
             <input value={draft.beanName || ""} onChange={e => setDraft({ ...draft, beanName: e.target.value, beanId: e.target.value ? null : draft.beanId })}
               placeholder="豆の名前を入力" style={{ ...inputStyle, background: "var(--paper)" }} />
-            <div style={{ fontSize: 11, color: draft.beanName?.trim() ? "rgba(241,232,219,.75)" : "var(--muted)", marginTop: 6 }}>My棚に登録すると、次から選択できます。</div>
           </div>
           <div style={{ width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: draft.beanName?.trim() ? "var(--crema)" : "transparent", border: draft.beanName?.trim() ? "none" : "2px solid var(--line)", color: "var(--espresso)" }}>
             {draft.beanName?.trim() && <Icon name="check" size={15} />}
           </div>
         </div>
       </div>
+
+      {/* アーカイブから選ぶ */}
+      {archivedBeans.length > 0 && (
+        <div style={{ marginBottom: 4 }}>
+          <button onClick={() => setShowArchived(v => !v)} style={{ width: "100%", background: "none", border: "none", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 4px", cursor: "pointer", color: "var(--muted)", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700 }}>アーカイブから選ぶ（{archivedBeans.length}）</span>
+            <span style={{ fontSize: 13, transform: showArchived ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▾</span>
+          </button>
+          {showArchived && <div className="cd-fade">{archivedBeans.map(BeanRow)}</div>}
+        </div>
+      )}
+
       <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+
+      {quickAdd && <QuickAddBean onClose={() => setQuickAdd(false)} onSave={(bean) => {
+        const nb = { ...bean, id: uid(), createdAt: Date.now() };
+        saveBeans([nb, ...beans]);
+        setDraft({ ...draft, beanId: nb.id, beanName: "" });
+        setQuickAdd(false);
+        notify("My棚に追加しました");
+      }} />}
     </div>
   );
 }
 
+// 淹れる画面からの豆の簡易登録（名前・産地・焙煎度）
+function QuickAddBean({ onClose, onSave }) {
+  const [name, setName] = useState("");
+  const [origin, setOrigin] = useState("");
+  const [roastLevel, setRoastLevel] = useState("中煎り");
+  return (
+    <ModalShell title="新しい豆を登録" onClose={onClose}>
+      <Field label="名前（必須）"><input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="例：エチオピア イルガチェフェ" /></Field>
+      <Field label="産地"><input style={inputStyle} value={origin} onChange={e => setOrigin(e.target.value)} placeholder="例：エチオピア" /></Field>
+      <Field label="焙煎度"><select style={inputStyle} value={roastLevel} onChange={e => setRoastLevel(e.target.value)}>{ROAST_LEVELS.map(r => <option key={r}>{r}</option>)}</select></Field>
+      <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0 2px", lineHeight: 1.7 }}>焙煎日や購入店などの詳細は、あとからMy棚で追記できます。</div>
+      <Btn disabled={!name.trim()} onClick={() => onSave({ name: name.trim(), origin: origin.trim(), roastLevel, variety: "", process: "", roastDate: "", shop: "", roasterNote: "" })} style={{ width: "100%", marginTop: 14 }}>登録して選択</Btn>
+    </ModalShell>
+  );
+}
+
 // ====== レシピ入力（共通部品）======
-function RecipeFields({ value, setValue, grinders, drippers, favorites, saveFavorites }) {
+function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites }) {
+  const notify = useContext(ToastCtx);
+  const registerGrinder = () => {
+    const nm = (value.grinderName || "").trim();
+    if (!nm || !saveGrinders) return;
+    const ng = { id: uid(), name: nm, createdAt: Date.now() };
+    saveGrinders([ng, ...grinders]);
+    setValue({ ...value, grinderId: ng.id, grinderName: "" });
+    setGrindText(false);
+    notify("My棚に追加しました");
+  };
+  const registerDripper = () => {
+    const nm = (value.dripperName || "").trim();
+    if (!nm || !saveDrippers) return;
+    const nd = { id: uid(), name: nm, createdAt: Date.now() };
+    saveDrippers([nd, ...drippers]);
+    setValue({ ...value, dripperId: nd.id, dripperName: "" });
+    setDripText(false);
+    notify("My棚に追加しました");
+  };
   const [showFav, setShowFav] = useState(false);
   const [favOpen, setFavOpen] = useState(null);
   const [naming, setNaming] = useState(false);
@@ -1231,7 +1327,10 @@ function RecipeFields({ value, setValue, grinders, drippers, favorites, saveFavo
           <input style={inputStyle} value={value.dripperName || ""} onChange={e => setValue({ ...value, dripperName: e.target.value, dripperId: "" })} placeholder="ドリッパー名を入力" />
         )}
       </Field>
-      {dripText && <div style={{ textAlign: "right", marginTop: -8, marginBottom: 8 }}><button onClick={() => { setDripText(false); setValue({ ...value, dripperName: "" }); }} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>My棚から選ぶ</button></div>}
+      {dripText && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: -4, marginBottom: 8 }}>
+        {saveDrippers ? <button onClick={registerDripper} disabled={!value.dripperName?.trim()} style={{ background: "none", border: "none", color: value.dripperName?.trim() ? "var(--terra)" : "var(--muted)", fontSize: 12, fontWeight: 700, cursor: value.dripperName?.trim() ? "pointer" : "default", padding: 0 }}>＋ My棚に登録</button> : <span />}
+        <button onClick={() => { setDripText(false); setValue({ ...value, dripperName: "" }); }} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>My棚から選ぶ</button>
+      </div>}
       <Field label="グラインダー・粒度">
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {!grindText ? (
@@ -1247,8 +1346,11 @@ function RecipeFields({ value, setValue, grinders, drippers, favorites, saveFavo
           <span style={{ fontSize: 13, color: "var(--muted)", whiteSpace: "nowrap" }}>クリック</span>
         </div>
       </Field>
-      {grindText && <div style={{ textAlign: "right", marginTop: -8, marginBottom: 8 }}><button onClick={() => { setGrindText(false); setValue({ ...value, grinderName: "" }); }} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>My棚から選ぶ</button></div>}
-      {(dripText || grindText) && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>My棚に登録すると、次から選択できます。</div>}
+      {grindText && <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: -4, marginBottom: 8 }}>
+        {saveGrinders ? <button onClick={registerGrinder} disabled={!value.grinderName?.trim()} style={{ background: "none", border: "none", color: value.grinderName?.trim() ? "var(--terra)" : "var(--muted)", fontSize: 12, fontWeight: 700, cursor: value.grinderName?.trim() ? "pointer" : "default", padding: 0 }}>＋ My棚に登録</button> : <span />}
+        <button onClick={() => { setGrindText(false); setValue({ ...value, grinderName: "" }); }} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>My棚から選ぶ</button>
+      </div>}
+      {(dripText || grindText) && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>「My棚に登録」すると、次から選択できます。</div>}
       <div style={{ background: "var(--paper)", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "var(--mocha)", marginBottom: 18 }}>抽出比率 <b style={{ color: "var(--terra)" }}>1 : {ratio}</b></div>
 
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 8 }}>注ぎ（レシピ）</div>
@@ -1296,7 +1398,7 @@ function RecipeFields({ value, setValue, grinders, drippers, favorites, saveFavo
 }
 
 // ====== STEP2 レシピ ======
-function Rec2({ draft, setDraft, beans, grinders, drippers, favorites, saveFavorites, setScreen }) {
+function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, setScreen }) {
   const beanName = beans.find(b => b.id === draft.beanId)?.name || draft.beanName || "未選択";
   return (
     <div className="cd-fade">
@@ -1306,7 +1408,7 @@ function Rec2({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
         <span className="cd-serif" style={{ fontSize: 15.5, fontWeight: 700, flex: 1 }}>{beanName}</span>
         <button onClick={() => setScreen("rec1")} style={{ background: "rgba(241,232,219,.18)", border: "none", color: "var(--cream)", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "5px 12px", borderRadius: 20 }}>変更</button>
       </div>
-      <RecipeFields value={draft} setValue={setDraft} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} />
+      <RecipeFields value={draft} setValue={setDraft} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} />
       <Btn style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
     </div>
   );
