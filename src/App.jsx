@@ -24,6 +24,9 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
 @keyframes cdfade{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
 .cd-sheet{animation:cdsheet .28s cubic-bezier(.22,.61,.36,1) both;}
 @keyframes cdsheet{from{transform:translateY(100%);}to{transform:translateY(0);}}
+@keyframes cdpop{0%{opacity:0;transform:scale(.5);}40%{opacity:1;transform:scale(1.1);}100%{opacity:.9;transform:scale(1);}}
+.cd-pulse{animation:cdpulse 1s ease-in-out infinite;}
+@keyframes cdpulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:.35;transform:scale(.75);}}
 .cd-spin{width:18px;height:18px;border:2px solid var(--line);border-top-color:var(--terra);border-radius:50%;animation:cdspin .7s linear infinite;}
 @keyframes cdspin{to{transform:rotate(360deg);}}
 @keyframes cdtoast{from{opacity:0;transform:translate(-50%,10px);}to{opacity:1;transform:translate(-50%,0);}}
@@ -240,7 +243,7 @@ export default function App() {
 
   // 記録フロー内の現在ステップを覚えておく（復帰用）
   useEffect(() => {
-    if (["rec1", "rec2", "rec3", "chat"].includes(screen)) setFlowStep(screen);
+    if (["rec1", "rec2", "rec3", "timer", "chat"].includes(screen)) setFlowStep(screen);
   }, [screen]);
 
   // 「淹れる」タブを押したとき：入力途中があれば確認、なければ新規開始
@@ -261,7 +264,7 @@ export default function App() {
   };
   // タブ切り替え時：編集中なら確認、それ以外は通常遷移
   const requestNav = (key) => {
-    if (editingId && ["rec1", "rec2", "rec3", "chat"].includes(screen)) { setPendingNav(key); return; }
+    if (editingId && ["rec1", "rec2", "rec3", "timer", "chat"].includes(screen)) { setPendingNav(key); return; }
     if (key === "rec") onBrew(); else setScreen(key);
   };
   const confirmLeave = () => {
@@ -284,7 +287,7 @@ export default function App() {
       dripperId: preset?.dripperId || (drippers[0]?.id ?? null),
       beanName: preset?.beanName || "", grinderName: preset?.grinderName || "", dripperName: preset?.dripperName || "",
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
-      grind: preset?.grind || 20, pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
+      grind: preset?.grind || 20, flowRate: preset?.flowRate || 4, pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
       taste: editId ? (preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 }) : { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
       flavorBig: editId ? (preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
       satisfaction: editId ? (preset?.satisfaction || 3) : 3, createdAt: editId ? (preset?.createdAt || Date.now()) : Date.now(),
@@ -343,8 +346,7 @@ export default function App() {
         {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
-        {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
-        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
+        {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
           onSave={(d) => saveDraftAsLog(d)} />}
       </div>
       <Nav screen={screen} onTab={requestNav} />
@@ -391,6 +393,10 @@ export default function App() {
           </div>
         </div>
       )}
+      {screen === "timer" && draft && (
+        <DripTimer draft={draft} grinders={grinders} drippers={drippers}
+          onFinish={() => setScreen("rec3")} onExit={() => setScreen("rec2")} />
+      )}
     </div>
     </ToastCtx.Provider>
   );
@@ -398,7 +404,7 @@ export default function App() {
 
 function Header({ screen, setScreen, detailFrom, editing }) {
   const back = { rec1: "home", rec2: "rec1", rec3: "rec2", chat: "rec3", karte: "home", history: "home", logdetail: detailFrom, profile: "home" };
-  const inFlow = ["rec1", "rec2", "rec3", "chat"].includes(screen);
+  const inFlow = ["rec1", "rec2", "rec3", "timer", "chat"].includes(screen);
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 10, background: "rgba(241,232,219,.92)", backdropFilter: "blur(8px)", padding: "18px 18px 12px", display: "flex", alignItems: "center", gap: 10 }}>
       {back[screen] ? (
@@ -1503,6 +1509,176 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
 }
 
 // ====== STEP2 レシピ ======
+// ====== ドリップタイマー ======
+function DripTimer({ draft, grinders, drippers, onFinish, onExit }) {
+  const pours = (draft.pours || []).map(p => ({ ...p, t: Number(p.t) || 0, ml: Number(p.ml) || 0 }));
+  const flowRate = Number(draft.flowRate) || 4; // ml/s
+  const [countdown, setCountdown] = useState(3);
+  const [started, setStarted] = useState(false);
+  const [elapsed, setElapsed] = useState(0); // 秒（小数）
+  const startRef = useRef(null);
+  const rafRef = useRef(null);
+  const notifiedRef = useRef(new Set());
+
+  // 3,2,1 カウントダウン
+  useEffect(() => {
+    if (started) return;
+    if (countdown <= 0) { setStarted(true); startRef.current = performance.now(); return; }
+    const t = setTimeout(() => setCountdown(c => c - 1), 900);
+    return () => clearTimeout(t);
+  }, [countdown, started]);
+
+  // 経過時間の更新
+  useEffect(() => {
+    if (!started) return;
+    const tick = () => {
+      setElapsed((performance.now() - startRef.current) / 1000);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [started]);
+
+  // 各投の注ぎ時間（秒）と終了時刻
+  const withTiming = pours.map(p => {
+    const dur = Math.max(3, Math.round(p.ml / flowRate)); // 注ぎにかかる目安秒数
+    return { ...p, dur, end: p.t + dur };
+  });
+  const totalEnd = withTiming.length ? Math.max(...withTiming.map(p => p.end)) + 30 : 0; // 最後の投＋落ち切り30秒
+
+  // 現在の状態を判定
+  const curIdx = (() => {
+    for (let i = withTiming.length - 1; i >= 0; i--) if (elapsed >= withTiming[i].t) return i;
+    return -1;
+  })();
+  const cur = curIdx >= 0 ? withTiming[curIdx] : null;
+  const next = withTiming[curIdx + 1] || null;
+  const pouring = cur && elapsed < cur.end;
+
+  // バイブ通知（各投の開始時）
+  useEffect(() => {
+    if (!started || curIdx < 0) return;
+    if (notifiedRef.current.has(curIdx)) return;
+    notifiedRef.current.add(curIdx);
+    if (navigator.vibrate) navigator.vibrate(pouring ? [90, 60, 90] : 60);
+  }, [curIdx, started, pouring]);
+
+  const done = started && elapsed >= totalEnd;
+
+  // 累計目標
+  const cumTarget = withTiming.slice(0, curIdx + 1).reduce((s, p) => s + p.ml, 0);
+  const prevCum = withTiming.slice(0, curIdx).reduce((s, p) => s + p.ml, 0);
+  // 注ぎ中はリアルタイムに増える推定値
+  const liveGrams = pouring && cur ? Math.min(cumTarget, prevCum + (elapsed - cur.t) * flowRate) : cumTarget;
+
+  // 円の進捗（注ぎ中＝注ぎの進捗 / 待機中＝次の投までの進捗）
+  const ring = (() => {
+    if (!started) return 0;
+    if (pouring && cur) return (elapsed - cur.t) / cur.dur;
+    if (next) { const from = cur ? cur.end : 0; return Math.min(1, (elapsed - from) / Math.max(0.001, next.t - from)); }
+    return Math.min(1, (elapsed - (cur?.end || 0)) / 30); // 落ち切り
+  })();
+
+  const R = 108, C = 2 * Math.PI * R;
+  const fmt = (s) => `${Math.floor(Math.max(0, s) / 60)}:${String(Math.floor(Math.max(0, s) % 60)).padStart(2, "0")}`;
+  const remain = pouring && cur ? cur.end - elapsed : next ? next.t - elapsed : Math.max(0, totalEnd - elapsed);
+  const totalWater = withTiming.reduce((s, p) => s + p.ml, 0);
+  // 次の投で到達する累計
+  const nextCumTarget = next ? withTiming.slice(0, curIdx + 2).reduce((s, p) => s + p.ml, 0) : totalWater;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 70, background: "var(--cream)", display: "flex", flexDirection: "column", maxWidth: 480, margin: "0 auto" }}>
+      {/* ヘッダー */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px" }}>
+        <button onClick={onExit} style={{ background: "none", border: "none", color: "var(--mocha)", fontSize: 13.5, fontWeight: 700, cursor: "pointer" }}>やめる</button>
+        <div style={{ fontSize: 12, color: "var(--muted)" }}>全体 <b className="cd-serif" style={{ fontSize: 15, color: "var(--bean)" }}>{fmt(elapsed)}</b></div>
+      </div>
+
+      {!started ? (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div key={countdown} className="cd-serif" style={{ fontSize: 96, fontWeight: 700, color: "var(--terra)", animation: "cdpop .9s ease both" }}>{countdown > 0 ? countdown : "☕"}</div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 8 }}>準備してください</div>
+        </div>
+      ) : (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 20px" }}>
+          {/* 状態バナー（注ぐ / 待機をはっきり） */}
+          {!done && (
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "7px 18px", borderRadius: 30, marginBottom: 14,
+              background: pouring ? "var(--terra)" : "transparent", border: pouring ? "none" : "1.5px solid var(--line)",
+              color: pouring ? "#fff" : "var(--muted)", fontSize: 13, fontWeight: 700, letterSpacing: ".06em" }}>
+              {pouring ? <><span className="cd-pulse" style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff" }} />注ぐ</> : next ? "待機 — 注がない" : "落ち切り待ち"}
+            </div>
+          )}
+
+          {/* 円形タイマー */}
+          <div style={{ position: "relative", width: 260, height: 260 }}>
+            <svg width="260" height="260" viewBox="0 0 260 260">
+              <g style={{ transform: "rotate(-90deg)", transformOrigin: "130px 130px" }}>
+                <circle cx="130" cy="130" r={R} fill="none" stroke="var(--line)" strokeWidth="10" />
+                <circle cx="130" cy="130" r={R} fill="none" stroke={pouring ? "var(--terra)" : "var(--crema)"} strokeWidth="10" strokeLinecap="round"
+                  strokeDasharray={C} strokeDashoffset={C * (1 - Math.min(1, Math.max(0, ring)))} style={{ transition: "stroke .3s" }} />
+              </g>
+            </svg>
+            {/* 中心 */}
+            <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+              {done ? (
+                <>
+                  <div className="cd-serif" style={{ fontSize: 26, fontWeight: 700, color: "var(--bean)" }}>完成</div>
+                  <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 6 }}>お疲れさまでした</div>
+                </>
+              ) : pouring ? (
+                <>
+                  <div className="cd-serif" style={{ fontSize: 20, fontWeight: 700, color: "var(--bean)" }}>{cur.label}</div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 3, marginTop: 2 }}>
+                    <span className="cd-serif" style={{ fontSize: 44, fontWeight: 700, color: "var(--terra)", lineHeight: 1 }}>{Math.round(liveGrams)}</span>
+                    <span className="cd-serif" style={{ fontSize: 22, fontWeight: 700, color: "var(--muted)" }}>/{cumTarget}g</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>この投で +{cur.ml}g（約{cur.dur}秒）</div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>全体 {Math.round(liveGrams)}/{totalWater}g</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 12, color: "var(--muted)", fontWeight: 700 }}>{next ? "次は" : "まもなく完成"}</div>
+                  <div className="cd-serif" style={{ fontSize: 24, fontWeight: 700, marginTop: 2 }}>{next ? next.label : "—"}</div>
+                  <div className="cd-serif" style={{ fontSize: 40, fontWeight: 700, color: "var(--bean)", marginTop: 4, lineHeight: 1 }}>{fmt(remain)}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 6 }}>
+                    {next ? `${nextCumTarget}g まで注ぎます` : `落ち切りまで`}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>現在 {Math.round(liveGrams)}/{totalWater}g</div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* 投の一覧 */}
+          <div style={{ width: "100%", marginTop: 22 }}>
+            {withTiming.map((p, i) => {
+              const state = elapsed >= p.end ? "done" : elapsed >= p.t ? "now" : "todo";
+              let c = withTiming.slice(0, i + 1).reduce((s, x) => s + x.ml, 0);
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 10, marginBottom: 5, background: state === "now" ? "rgba(179,85,47,.1)" : "transparent", opacity: state === "done" ? 0.45 : 1 }}>
+                  <div style={{ width: 18, color: state === "done" ? "var(--terra)" : "var(--line)" }}>{state === "done" ? <Icon name="check" size={16} /> : <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: state === "now" ? "var(--terra)" : "var(--line)" }} />}</div>
+                  <div style={{ fontSize: 13, fontWeight: state === "now" ? 700 : 400, flex: 1 }}>{p.label}</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>{fmt(p.t)}</div>
+                  <div style={{ fontSize: 12.5, width: 52, textAlign: "right" }}>+{p.ml}g</div>
+                  <div style={{ fontSize: 12, color: "var(--muted)", width: 44, textAlign: "right", fontWeight: 700 }}>{c}g</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* フッター */}
+      <div style={{ padding: "14px 20px 26px" }}>
+        {done
+          ? <Btn onClick={onFinish} style={{ width: "100%" }}>味わいメモへ →</Btn>
+          : <Btn kind="ghost" onClick={onFinish} style={{ width: "100%" }} disabled={!started}>淹れ終えた（記録へ）</Btn>}
+      </div>
+    </div>
+  );
+}
+
 function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, setScreen }) {
   const beanName = beans.find(b => b.id === draft.beanId)?.name || draft.beanName || "未選択";
   return (
@@ -1514,6 +1690,23 @@ function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDr
         <button onClick={() => setScreen("rec1")} style={{ background: "rgba(241,232,219,.18)", border: "none", color: "var(--cream)", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "5px 12px", borderRadius: 20 }}>変更</button>
       </div>
       <RecipeFields value={draft} setValue={setDraft} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} />
+
+      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)" }}>注ぎの速さ</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>タイマーで「何秒かけて注ぐか」の目安になります</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <NumberInput value={draft.flowRate ?? 4} onChange={v => setDraft({ ...draft, flowRate: v })} style={{ ...inputStyle, width: 64, textAlign: "center", padding: "8px 6px" }} />
+            <span style={{ fontSize: 12.5, color: "var(--muted)" }}>ml/秒</span>
+          </div>
+        </div>
+      </div>
+
+      <Btn onClick={() => setScreen("timer")} style={{ width: "100%", marginBottom: 10, background: "var(--crema)", color: "var(--espresso)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+        <Icon name="brew" size={18} />ドリップスタート
+      </Btn>
       <Btn style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
     </div>
   );
