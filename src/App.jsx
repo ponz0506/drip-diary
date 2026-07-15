@@ -294,11 +294,22 @@ export default function App() {
   };
 
   // 新規なら先頭に追加、編集（同じid）なら置き換え
-  const saveDraftAsLog = (d) => {
-    const exists = logs.some(l => l.id === d.id);
+  const saveDraftAsLog = (d0) => {
+    const exists = logs.some(l => l.id === d0.id);
+    // 新規記録は必ずその時点の日時にする（プリセット由来の日付を引き継がない）
+    const d = exists ? d0 : { ...d0, createdAt: d0.createdAt || Date.now() };
     const newLogs = exists ? logs.map(l => (l.id === d.id ? d : l)) : [d, ...logs];
     saveLogs(newLogs);
-    if (d.nextRecipe) saveProposed({ ...d.nextRecipe, beanId: d.beanId, grinderId: d.grinderId, dripperId: d.dripperId, beanName: d.beanName, grinderName: d.grinderName, dripperName: d.dripperName });
+    if (d.nextRecipe) {
+      // 次の一杯は「レシピ情報」だけを保持する（日付・味・満足度などの結果は引き継がない）
+      const r = d.nextRecipe;
+      saveProposed({
+        grounds: r.grounds, water: r.water, temp: r.temp, grind: r.grind,
+        pours: (r.pours || []).map(p => ({ ...p })), reason: r.reason || "",
+        beanId: d.beanId, grinderId: d.grinderId, dripperId: d.dripperId,
+        beanName: d.beanName, grinderName: d.grinderName, dripperName: d.dripperName,
+      });
+    }
     notify(exists ? "記録を更新しました" : "日記に保存しました");
     if (exists) { setDetailId(d.id); setScreen("logdetail"); } else { setScreen("home"); }
     setEditingId(null); setDraft(null);
@@ -432,7 +443,7 @@ function ProgressSection({ logs, beans, openLog }) {
   for (let i = 0; i < startWd; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
-  const cupColor = (n) => n <= 0 ? "transparent" : n === 1 ? "rgba(179,85,47,.3)" : n === 2 ? "rgba(179,85,47,.6)" : "var(--terra)";
+  const cupColor = (n) => n <= 0 ? "transparent" : n === 1 ? "rgba(179,85,47,.45)" : n === 2 ? "rgba(179,85,47,.72)" : "var(--terra)";
   const todayK = dayKey(Date.now());
   const monthLabel = `${ym.y}年${ym.m + 1}月`;
   const shiftMonth = (delta) => { const d = new Date(ym.y, ym.m + delta, 1); setYm({ y: d.getFullYear(), m: d.getMonth() }); };
@@ -479,7 +490,7 @@ function ProgressSection({ logs, beans, openLog }) {
         })}
       </div>
       <div style={{ fontSize: 10.5, color: "var(--muted)", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5 }}>
-        少<span style={{ width: 11, height: 11, borderRadius: "50%", background: "rgba(179,85,47,.3)" }} /><span style={{ width: 11, height: 11, borderRadius: "50%", background: "rgba(179,85,47,.6)" }} /><span style={{ width: 11, height: 11, borderRadius: "50%", background: "var(--terra)" }} />多
+        少<span style={{ width: 11, height: 11, borderRadius: "50%", background: "rgba(179,85,47,.45)" }} /><span style={{ width: 11, height: 11, borderRadius: "50%", background: "rgba(179,85,47,.72)" }} /><span style={{ width: 11, height: 11, borderRadius: "50%", background: "var(--terra)" }} />多
       </div>
     </div>
   );
@@ -1513,10 +1524,22 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
   const setTaste = (k, v) => setDraft({ ...draft, taste: { ...draft.taste, [k]: Number(v) } });
   const req = <span style={{ color: "var(--terra)", fontSize: 11, marginLeft: 6 }}>必須</span>;
   const valid = !!draft.flavorBig && !!draft.flavorSmall;
+  // datetime-local 用（ローカル時刻の YYYY-MM-DDTHH:mm）
+  const dtValue = (() => {
+    const d = new Date(draft.createdAt || Date.now());
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  })();
   return (
     <div className="cd-fade">
       <StepDots n={3} />
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 12 }}>味わいのバランス（1〜5）{req}</div>
+      {editing && (
+        <Field label="淹れた日時">
+          <input type="datetime-local" style={inputStyle} value={dtValue}
+            onChange={e => { const t = new Date(e.target.value).getTime(); if (!Number.isNaN(t)) setDraft({ ...draft, createdAt: t }); }} />
+        </Field>
+      )}
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 12, marginTop: editing ? 14 : 0 }}>味わいのバランス（1〜5）{req}</div>
       {TASTE_AXES.map(ax => (
         <div key={ax} style={{ marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, marginBottom: 5 }}>
