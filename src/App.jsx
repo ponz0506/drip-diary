@@ -869,7 +869,8 @@ const normalizeProcess = (s) => {
 };
 const PROFILE_DIMS = [
   { key: "roast", label: "焙煎度", get: b => b.roastLevel || "", order: ROAST_LEVELS },
-  { key: "origin", label: "産地", get: b => (b.origin || "").trim() },
+  // 産地は国名でまとめる（「ブラジル ミナスジェライス州 …」→「ブラジル」）
+  { key: "origin", label: "産地", get: b => (b.origin || "").trim().split(/[\s　・,、/／(（]/)[0] },
   { key: "process", label: "精製", get: b => normalizeProcess(b.process) },
   { key: "variety", label: "品種", get: b => (b.variety || "").trim() },
 ];
@@ -898,17 +899,38 @@ function buildPreferenceProfile(logs, beans) {
       : list.sort((a, b) => (b.avg ?? 0) - (a.avg ?? 0) || b.cupCount - a.cupCount);
     dims[d.key] = { label: d.label, groups: list, missing };
   });
-  const count = (ls) => { const c = {}; ls.forEach(l => { if (l.flavorSmall) c[l.flavorSmall] = (c[l.flavorSmall] || 0) + 1; }); return Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => ({ flavor: k, n })); };
   const high = logs.filter(l => l.satisfaction >= 4), low = logs.filter(l => l.satisfaction <= 2);
+  // フレーバーは「高評価で出た回数 − 低評価で出た回数」で好き/苦手を判定（同じ味が両方に出る矛盾を防ぐ）
+  const flav = {};
+  high.forEach(l => { if (l.flavorSmall) (flav[l.flavorSmall] = flav[l.flavorSmall] || { hi: 0, lo: 0 }).hi++; });
+  low.forEach(l => { if (l.flavorSmall) (flav[l.flavorSmall] = flav[l.flavorSmall] || { hi: 0, lo: 0 }).lo++; });
+  const flavList = Object.entries(flav).map(([flavor, c]) => ({ flavor, hi: c.hi, lo: c.lo, net: c.hi - c.lo }));
+  const liked = flavList.filter(f => f.net > 0).sort((a, b) => b.net - a.net || b.hi - a.hi).slice(0, 3);
+  const disliked = flavList.filter(f => f.net < 0).sort((a, b) => a.net - b.net || b.lo - a.lo).slice(0, 3);
   const AX = ["酸味", "苦味", "甘味", "コク", "濃度感"];
   const avgAx = (ls, ax) => (ls.length ? ls.reduce((s, l) => s + (l.taste?.[ax] ?? 0), 0) / ls.length : 0);
   const taste = high.length ? AX.map(ax => ({ ax, d: avgAx(high, ax) - avgAx(logs, ax) })).filter(x => Math.abs(x.d) >= 0.4).sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 2) : [];
   return {
     cupCount: logs.length, beanCount: used.length, dims,
-    likedFlavors: count(high), dislikedFlavors: count(low), taste,
+    likedFlavors: liked, dislikedFlavors: disliked, taste,
     rebuyYes: used.filter(b => b.rebuy === "yes").map(b => b.name),
     rebuyNo: used.filter(b => b.rebuy === "no").map(b => b.name),
   };
+}
+
+// 好みカードの1行：ラベル＋チップ
+function PrefRow({ label, items, muted }) {
+  return (
+    <>
+      <span style={{ fontSize: 11.5, color: "var(--muted)", whiteSpace: "nowrap" }}>{label}</span>
+      <span style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+        {items.map(t => (
+          <span key={t} style={{ fontSize: 12.5, fontWeight: 700, padding: "3px 10px", borderRadius: 20, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            background: muted ? "transparent" : "var(--paper)", color: muted ? "var(--muted)" : "var(--terra)", border: `1px solid ${muted ? "var(--line)" : "rgba(179,85,47,.3)"}` }}>{t}</span>
+        ))}
+      </span>
+    </>
+  );
 }
 
 // ====== 味覚プロフィール（全記録横断・好みの傾向）======
@@ -945,7 +967,24 @@ function TasteProfile({ logs, beans }) {
   return (
     <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 24 }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 4 }}>あなたの味の好み</div>
-      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 6 }}>全記録から。テラコッタが高評価（4-5★）だった味の形。</div>
+      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10 }}>{prof.cupCount}杯・{prof.beanCount}袋の記録から</div>
+
+      {/* ひと目で分かる好みカード（結論を先に） */}
+      {(favs.length > 0 || prof.taste.length > 0 || prof.likedFlavors.length > 0 || prof.dislikedFlavors.length > 0 || prof.rebuyYes.length > 0) ? (
+        <div style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 14, rowGap: 8, alignItems: "center" }}>
+          {favs.map(f => <PrefRow key={f.label} label={f.label} items={[f.value]} />)}
+          {prof.taste.length > 0 && <PrefRow label="味" items={prof.taste.map(t => `${t.ax}${t.d > 0 ? "高め" : "控えめ"}`)} />}
+          {(favs.length > 0 || prof.taste.length > 0) && (prof.likedFlavors.length > 0 || prof.dislikedFlavors.length > 0 || prof.rebuyYes.length > 0) && <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed var(--line)" }} />}
+          {prof.likedFlavors.length > 0 && <PrefRow label="好きな香り" items={prof.likedFlavors.map(f => f.flavor)} />}
+          {prof.dislikedFlavors.length > 0 && <PrefRow label="苦手な香り" items={prof.dislikedFlavors.map(f => f.flavor)} muted />}
+          {prof.rebuyYes.length > 0 && <PrefRow label="また買いたい" items={prof.rebuyYes} />}
+        </div>
+      ) : (
+        <div style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", fontSize: 12, color: "var(--muted)" }}>いろいろな豆を記録すると、ここに好みがまとまります。</div>
+      )}
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "18px 0 4px" }}>味の形</div>
+      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 6 }}>テラコッタが高評価（4-5★）だった味の形。</div>
       <ResponsiveContainer width="100%" height={240}>
         <RadarChart data={radarData}>
           <PolarGrid stroke="#e3d8c8" />
@@ -986,16 +1025,6 @@ function TasteProfile({ logs, beans }) {
         </>
       )}
 
-      {/* ことばでまとめ */}
-      <div style={sub}>まとめ</div>
-      <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.9 }}>
-        {favs.length > 0 && <div>満足度が高め：{favs.map((f, i) => <span key={f.label}>{i > 0 && "、"}{f.label}は<b style={{ color: "var(--terra)" }}>{f.value}</b></span>)}</div>}
-        {prof.taste.length > 0 && <div>高評価のときの味：{prof.taste.map(t => `${t.ax}が${t.d > 0 ? "高め" : "低め"}`).join("・")}</div>}
-        {prof.likedFlavors.length > 0 && <div>好きなフレーバー：<b style={{ color: "var(--terra)" }}>{prof.likedFlavors.map(f => f.flavor).join("・")}</b></div>}
-        {prof.dislikedFlavors.length > 0 && <div>低評価に多いフレーバー：{prof.dislikedFlavors.map(f => f.flavor).join("・")}</div>}
-        {prof.rebuyYes.length > 0 && <div>また買いたい豆：{prof.rebuyYes.join("、")}</div>}
-        {!favs.length && !prof.taste.length && !prof.likedFlavors.length && !prof.rebuyYes.length && <div style={{ color: "var(--muted)" }}>いろいろな豆を記録すると、ここに好みがまとまります。</div>}
-      </div>
     </div>
   );
 }
