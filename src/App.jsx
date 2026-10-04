@@ -371,7 +371,7 @@ export default function App() {
         {screen === "home" && <Home beans={beans} logs={logs} proposed={proposed} startRecord={startRecord} setScreen={setScreen} openLog={(id) => { setDetailId(id); setDetailFrom("home"); setScreen("logdetail"); }} />}
         {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
-        {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
+        {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
         {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
@@ -589,7 +589,7 @@ function LogCard({ log: l, bean, onClick, trialNo, showBeanNo }) {
 }
 
 // ====== カルテ（豆 / ミル / ドリッパー / レシピ 切替）======
-function Karte({ beans, saveBeans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, startRecord }) {
+function Karte({ beans, saveBeans, logs, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, startRecord }) {
   const [tab, setTab] = useState("bean");
   return (
     <div className="cd-fade">
@@ -598,7 +598,7 @@ function Karte({ beans, saveBeans, grinders, saveGrinders, drippers, saveDripper
           <button key={k} onClick={() => setTab(k)} style={{ flex: 1, padding: "9px 2px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap", background: tab === k ? "var(--bean)" : "transparent", color: tab === k ? "var(--cream)" : "var(--mocha)" }}>{l}</button>
         ))}
       </div>
-      {tab === "bean" && <Beans beans={beans} saveBeans={saveBeans} />}
+      {tab === "bean" && <Beans beans={beans} saveBeans={saveBeans} logs={logs} />}
       {tab === "grinder" && <Equipment items={grinders} save={saveGrinders} kind="grinder" />}
       {tab === "dripper" && <Equipment items={drippers} save={saveDrippers} kind="dripper" />}
       {tab === "recipe" && <FavRecipes favorites={favorites} saveFavorites={saveFavorites} grinders={grinders} drippers={drippers} startRecord={startRecord} />}
@@ -1082,7 +1082,41 @@ function Equipment({ items, save, kind }) {
 }
 
 // ====== 豆カルテ ======
-function Beans({ beans, saveBeans }) {
+// 豆を飲み終えたとき（アーカイブ）の確認。「また買いたい？」は好みの分析・次の豆の提案に使う
+const REBUY_OPTIONS = [["yes", "また買いたい"], ["maybe", "どちらでもない"], ["no", "もう買わない"]];
+function ArchiveBeanModal({ bean, logs, onClose, onArchive }) {
+  const [rebuy, setRebuy] = useState(bean.rebuy || "");
+  const [note, setNote] = useState(bean.finishNote || "");
+  const ls = (logs || []).filter(l => l.beanId === bean.id);
+  const avg = ls.length ? ls.reduce((s, l) => s + (l.satisfaction || 0), 0) / ls.length : 0;
+  const top = ls.length ? Math.max(...ls.map(l => l.satisfaction || 0)) : 0;
+  return (
+    <ModalShell title="この豆を飲み終えましたか？" onClose={onClose}>
+      <div style={{ background: "var(--paper)", borderRadius: 14, padding: "12px 14px", marginBottom: 18 }}>
+        <div className="cd-serif" style={{ fontSize: 15.5, fontWeight: 700 }}>{bean.name}</div>
+        <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>
+          {ls.length ? <>{ls.length}杯 · 平均 <b style={{ color: "var(--terra)" }}>{avg.toFixed(1)}★</b> · 最高 {top}★</> : "記録はまだありません"}
+        </div>
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--mocha)", marginBottom: 8 }}>この豆、また買いたいですか？<span style={{ fontSize: 11, fontWeight: 400, color: "var(--muted)", marginLeft: 6 }}>任意</span></div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
+        {REBUY_OPTIONS.map(([k, l]) => <Chip key={k} active={rebuy === k} onClick={() => setRebuy(rebuy === k ? "" : k)}>{l}</Chip>)}
+      </div>
+      <Field label="ひとことメモ（任意）">
+        <textarea style={{ ...inputStyle, minHeight: 56, resize: "vertical" }} value={note} onChange={e => setNote(e.target.value)} placeholder="例：浅めの抽出がいちばんおいしかった" />
+      </Field>
+      <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, margin: "4px 0 14px" }}>アーカイブした豆は一覧の下にまとめられ、いつでも使用中に戻せます。記録は日記に残ります。</div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Btn kind="ghost" onClick={onClose} style={{ flex: 1 }}>キャンセル</Btn>
+        <Btn onClick={() => onArchive({ rebuy, finishNote: note.trim() })} style={{ flex: 2 }}>アーカイブする</Btn>
+      </div>
+    </ModalShell>
+  );
+}
+
+function Beans({ beans, saveBeans, logs }) {
+  const [archiving, setArchiving] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
   const [editing, setEditing] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const notify = useContext(ToastCtx);
@@ -1135,14 +1169,20 @@ function Beans({ beans, saveBeans }) {
             { label: "編集", onClick: () => setEditing(b) },
             archived
               ? { label: "使用中に戻す", onClick: () => { saveBeans(beans.map(x => x.id === b.id ? { ...x, archived: false } : x)); notify("使用中に戻しました"); } }
-              : { label: "アーカイブ", onClick: () => { saveBeans(beans.map(x => x.id === b.id ? { ...x, archived: true } : x)); notify("アーカイブしました"); } },
-            { label: "削除", danger: true, onClick: () => { saveBeans(beans.filter(x => x.id !== b.id)); notify("My棚から削除しました"); } },
+              : { label: "アーカイブ", onClick: () => setArchiving(b) },
+            { label: "削除", danger: true, onClick: () => setConfirmDel(b) },
           ]} />
         </div>
       </div>
       <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>{[b.origin, b.process].filter(Boolean).join(" · ")}</div>
       {fmtBeanDate(b) && <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>{fmtBeanDate(b)}</div>}
       {b.roasterNote && <div style={{ fontSize: 12.5, color: "var(--mocha)", marginTop: 8, fontStyle: "italic" }}>“{b.roasterNote}”</div>}
+      {archived && (b.rebuy || b.finishNote) && (
+        <div style={{ fontSize: 12, color: "var(--bean)", marginTop: 8, display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          {b.rebuy && <span style={{ fontWeight: 700, color: b.rebuy === "yes" ? "var(--terra)" : "var(--mocha)", border: "1px solid currentColor", borderRadius: 20, padding: "1px 8px", fontSize: 11 }}>{REBUY_OPTIONS.find(o => o[0] === b.rebuy)?.[1]}</span>}
+          {b.finishNote && <span>{b.finishNote}</span>}
+        </div>
+      )}
     </div>
   );
 
@@ -1159,6 +1199,25 @@ function Beans({ beans, saveBeans }) {
             <span style={{ fontSize: 13, transform: showArchived ? "rotate(180deg)" : "none", transition: "transform .2s" }}>▾</span>
           </button>
           {showArchived && <div className="cd-fade">{archivedBeans.map(b => <BeanCard key={b.id} b={b} archived={true} />)}</div>}
+        </div>
+      )}
+      {archiving && (
+        <ArchiveBeanModal bean={archiving} logs={logs} onClose={() => setArchiving(null)}
+          onArchive={({ rebuy, finishNote }) => {
+            saveBeans(beans.map(x => x.id === archiving.id ? { ...x, archived: true, archivedAt: Date.now(), rebuy, finishNote } : x));
+            setArchiving(null); notify("アーカイブしました");
+          }} />
+      )}
+      {confirmDel && (
+        <div onClick={() => setConfirmDel(null)} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(44,30,21,.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+          <div onClick={e => e.stopPropagation()} className="cd-fade" style={{ background: "var(--paper)", borderRadius: 20, padding: 24, maxWidth: 340, width: "100%", boxShadow: "0 16px 40px rgba(44,30,21,.3)" }}>
+            <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>「{confirmDel.name}」を削除しますか？</div>
+            <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>
+              削除すると元に戻せません。日記の記録は残りますが、産地や焙煎度などの豆の情報は表示されなくなります。飲み終えた豆は「アーカイブ」がおすすめです。
+            </div>
+            <Btn style={{ width: "100%", marginBottom: 10, background: "var(--danger)" }} onClick={() => { const id = confirmDel.id; setConfirmDel(null); saveBeans(beans.filter(x => x.id !== id)); notify("My棚から削除しました"); }}>削除する</Btn>
+            <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setConfirmDel(null)}>キャンセル</Btn>
+          </div>
         </div>
       )}
     </div>
