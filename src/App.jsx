@@ -761,7 +761,7 @@ function TasteProfile({ logs, beans }) {
 // ====== 豆別サマリーパネル ======
 const RADAR_COLORS = ["#b3552f", "#c98a4b", "#6b4e3a"];
 
-function BeanSummary({ logs, grinders, drippers, openLog, startRecord, tab, setTab }) {
+function BeanSummary({ logs, openLog, tab, setTab }) {
 
   // 古い順に並べ直して試行番号を付ける
   const sorted = [...logs].sort((a, b) => a.createdAt - b.createdAt).map((l, i) => ({ ...l, _n: i + 1 }));
@@ -790,13 +790,6 @@ function BeanSummary({ logs, grinders, drippers, openLog, startRecord, tab, setT
     ...(lowLogs.length ? { 低満足: Number(avgOf(lowLogs, ax).toFixed(1)) } : {}),
   }));
 
-  // ---- ③ ベストレシピ（満足度が最高の回。同点なら新しい回）----
-  const bestSat = Math.max(...sorted.map(l => l.satisfaction || 0));
-  const bestTies = sorted.filter(l => (l.satisfaction || 0) === bestSat);
-  const best = bestTies[bestTies.length - 1];
-  const bestGrinder = (grinders || []).find(g => g.id === best.grinderId)?.name || best.grinderName || "粒度";
-  const bestDripper = (drippers || []).find(d => d.id === best.dripperId)?.name || best.dripperName || "";
-
   const tabStyle = (k) => ({
     flex: 1, padding: "8px 4px", fontSize: 12, fontWeight: 700, background: "none",
     border: "none", borderBottom: tab === k ? "2.5px solid var(--terra)" : "2.5px solid transparent",
@@ -810,7 +803,6 @@ function BeanSummary({ logs, grinders, drippers, openLog, startRecord, tab, setT
       <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
         <button style={tabStyle("satisfaction")} onClick={() => setTab("satisfaction")}>満足度推移</button>
         <button style={tabStyle("flavor")} onClick={() => setTab("flavor")}>フレーバー</button>
-        <button style={tabStyle("best")} onClick={() => setTab("best")}>ベストレシピ</button>
       </div>
 
       <div style={{ padding: "16px 12px" }}>
@@ -865,41 +857,6 @@ function BeanSummary({ logs, grinders, drippers, openLog, startRecord, tab, setT
           </>
         )}
 
-        {tab === "best" && (
-          <>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>
-              この豆でいちばん満足度が高かった一杯{bestTies.length > 1 ? `（${bestSat}★は${bestTies.length}回。いちばん新しい回を表示）` : ""}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-              <span className="cd-serif" style={{ fontSize: 15, fontWeight: 700, color: "var(--bean)" }}>{best._n}回目</span>
-              <span style={{ fontSize: 12, color: "var(--muted)" }}>{new Date(best.createdAt).toLocaleDateString("ja-JP")}</span>
-              <span style={{ flex: 1 }} />
-              <SatDot v={best.satisfaction} />
-            </div>
-            <div style={{ display: "flex", gap: 12, fontSize: 13, flexWrap: "wrap", marginBottom: 10 }}>
-              <span>粉 <b>{best.grounds}g</b></span><span>湯 <b>{best.water}ml</b></span>
-              {best.grounds ? <span>比率 <b>1:{(best.water / best.grounds).toFixed(1)}</b></span> : null}
-              <span><b>{best.temp}℃</b></span><span>{bestGrinder} <b>{best.grind}</b></span>
-              {bestDripper && <span>{bestDripper}</span>}
-            </div>
-            <div style={{ background: "var(--cream)", borderRadius: 10, padding: "8px 12px", marginBottom: 10 }}>
-              {(() => { let c = 0; return (best.pours || []).map((p, i) => { c += Number(p.ml) || 0; return (
-                <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "var(--bean)", padding: "3px 0" }}>
-                  <span style={{ flex: 1 }}>{p.label}</span>
-                  <span style={{ color: "var(--muted)", flex: 1, textAlign: "center" }}>{fmtTime(Number(p.t) || 0)}</span>
-                  <span style={{ flex: 1, textAlign: "center" }}>+{p.ml}g</span>
-                  <span style={{ fontWeight: 700, flex: 1, textAlign: "right" }}>{c}g</span>
-                </div>
-              ); }); })()}
-            </div>
-            {(best.flavorBig || best.flavorSmall) && <div style={{ fontSize: 12.5, color: "var(--mocha)", marginBottom: 6 }}>フレーバー：{[best.flavorBig, best.flavorSmall].filter(Boolean).join(" → ")}</div>}
-            {best.memo && <div style={{ fontSize: 12.5, color: "var(--bean)", fontStyle: "italic", background: "var(--cream)", padding: "8px 12px", borderRadius: 10, marginBottom: 6 }}>“{best.memo}”</div>}
-            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-              <Btn kind="ghost" onClick={() => openLog(best.id)} style={{ flex: 1, padding: "10px" }}>詳細を見る</Btn>
-              {startRecord && <Btn onClick={() => startRecord({ ...best }, "rec2")} style={{ flex: 2, padding: "10px" }}>このレシピで淹れる</Btn>}
-            </div>
-          </>
-        )}
       </div>
     </div>
   );
@@ -967,7 +924,7 @@ function History({ logs, beans, grinders, drippers, startRecord, openLog }) {
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
             {beanF === "all" ? <>よく淹れる豆「<b style={{ color: "var(--mocha)" }}>{summaryBean}</b>」の傾向</> : <><b style={{ color: "var(--mocha)" }}>{summaryBean}</b> の抽出データ</>}
           </div>
-          <BeanSummary logs={beanLogs} grinders={grinders} drippers={drippers} openLog={openLog} startRecord={startRecord} tab={sumTab} setTab={setSumTab} />
+          <BeanSummary logs={beanLogs} openLog={openLog} tab={sumTab} setTab={setSumTab} />
         </div>
       )}
 
