@@ -77,11 +77,15 @@ const SEED_DRIPPER = { id: uid(), name: "Hario V60 02", type: "円錐", note: ""
 // 秒 ⇄ 分秒 の表示ヘルパー
 const fmtTime = (s) => `${Math.floor(s / 60)}分${String(s % 60).padStart(2, "0")}秒`;
 
+// 注ぐ量の％（全体湯量比）⇄ g の変換。pct が無い投は ml から逆算する
+const pourPct = (p, water) => (typeof p.pct === "number" ? p.pct : (Number(water) ? Math.round((Number(p.ml) || 0) / Number(water) * 1000) / 10 : 0));
+const pctToMl = (pct, water) => Math.round((Number(water) || 0) * (Number(pct) || 0) / 100);
+
 // AIが返した注ぎを現実的なタイミングに整える（間隔30〜45秒、近すぎ/離れすぎを補正）
 const sanitizePours = (pours, water) => {
   let ps = Array.isArray(pours) ? pours.filter(p => p && (typeof p.ml === "number" || typeof p.ml === "string")) : [];
   if (!ps.length) return [{ label: "1投目", t: 0, ml: Number(water) || 240 }];
-  ps = ps.map((p, i) => ({ label: p.label || `${i + 1}投目`, t: Number(p.t) || 0, ml: Math.max(0, Math.round(Number(p.ml) || 0)) }));
+  ps = ps.map((p, i) => ({ label: p.label || `${i + 1}投目`, t: Number(p.t) || 0, ml: Math.max(0, Math.round(Number(p.ml) || 0)), ...(Number(p.rate) > 0 ? { rate: Number(p.rate) } : {}) }));
   ps.sort((a, b) => a.t - b.t);
   ps[0].t = 0; ps[0].label = "1投目";
   for (let i = 1; i < ps.length; i++) {
@@ -287,7 +291,7 @@ export default function App() {
       dripperId: preset?.dripperId || (drippers[0]?.id ?? null),
       beanName: preset?.beanName || "", grinderName: preset?.grinderName || "", dripperName: preset?.dripperName || "",
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
-      grind: preset?.grind || 20, flowRate: preset?.flowRate || 4, pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
+      grind: preset?.grind || 20, flowRate: preset?.flowRate || 4, pourUnit: preset?.pourUnit || "g", pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
       taste: editId ? (preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 }) : { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
       flavorBig: editId ? (preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
       satisfaction: editId ? (preset?.satisfaction || 3) : 3, createdAt: editId ? (preset?.createdAt || Date.now()) : Date.now(),
@@ -307,7 +311,7 @@ export default function App() {
       // 次の一杯は「レシピ情報」だけを保持する（日付・味・満足度などの結果は引き継がない）
       const r = d.nextRecipe;
       saveProposed({
-        grounds: r.grounds, water: r.water, temp: r.temp, grind: r.grind,
+        grounds: r.grounds, water: r.water, temp: r.temp, grind: r.grind, pourUnit: r.pourUnit || "g",
         pours: (r.pours || []).map(p => ({ ...p })), reason: r.reason || "",
         beanId: d.beanId, grinderId: d.grinderId, dripperId: d.dripperId,
         beanName: d.beanName, grinderName: d.grinderName, dripperName: d.dripperName,
@@ -1339,7 +1343,7 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
     <div style={{ flex: 1 }}>
       <Field label={label}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <NumberInput value={value[k]} onChange={v => setValue({ ...value, [k]: v })} style={inputStyle} />
+          <NumberInput value={value[k]} onChange={v => k === "water" ? setWater(v) : setValue({ ...value, [k]: v })} style={inputStyle} />
           <span style={{ fontSize: 13, color: "var(--muted)" }}>{unit}</span>
         </div>
       </Field>
@@ -1347,7 +1351,23 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
   );
   const pours = value.pours || [];
   const ratio = value.grounds ? (value.water / value.grounds).toFixed(1) : "–";
+  const isPct = value.pourUnit === "%";
+  const defaultRate = Number(value.flowRate) || 4;
   const updatePour = (i, k, v) => { const p = [...pours]; p[i] = { ...p[i], [k]: Number(v) }; setValue({ ...value, pours: p }); };
+  // %入力：比率を保持しつつ、g（ml）は総湯量から算出して常に持たせる（タイマー・日記・AIはmlを使う）
+  const setPourPct = (i, v) => {
+    const p = [...pours]; p[i] = { ...p[i], pct: Number(v), ml: pctToMl(v, value.water) }; setValue({ ...value, pours: p });
+  };
+  const setWater = (w) => {
+    if (!isPct) return setValue({ ...value, water: w });
+    setValue({ ...value, water: w, pours: pours.map(p => { const pct = pourPct(p, value.water); return { ...p, pct, ml: pctToMl(pct, w) }; }) });
+  };
+  const setUnit = (u) => {
+    if (u === (isPct ? "%" : "g")) return;
+    // g→% に切り替えた時点のgから比率を計算し直して記録する（g表示中に編集された分を反映）
+    setValue({ ...value, pourUnit: u, pours: u === "%" ? pours.map(p => ({ ...p, pct: pourPct({ ml: p.ml }, value.water) })) : pours });
+  };
+  const pctSum = Math.round(pours.reduce((s, p) => s + pourPct(p, value.water), 0) * 10) / 10;
   const setPourTime = (i, part, v) => {
     const p = [...pours]; const cur = p[i].t || 0;
     const min = part === "m" ? Number(v) : Math.floor(cur / 60);
@@ -1355,13 +1375,13 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
     p[i] = { ...p[i], t: min * 60 + sec }; setValue({ ...value, pours: p });
   };
   const loadFav = (f) => {
-    setValue({ ...value, grounds: f.grounds, water: f.water, temp: f.temp, grinderId: f.grinderId, dripperId: f.dripperId ?? value.dripperId, grinderName: f.grinderName || "", dripperName: f.dripperName || "", grind: f.grind, pours: f.pours.map(p => ({ ...p })) });
+    setValue({ ...value, grounds: f.grounds, water: f.water, temp: f.temp, grinderId: f.grinderId, dripperId: f.dripperId ?? value.dripperId, grinderName: f.grinderName || "", dripperName: f.dripperName || "", grind: f.grind, pourUnit: f.pourUnit || "g", pours: f.pours.map(p => ({ ...p })) });
     setDripText(!!f.dripperName); setGrindText(!!f.grinderName);
     setShowFav(false);
   };
   const registerFav = () => {
     if (!favName.trim()) return;
-    saveFavorites([{ id: uid(), name: favName.trim(), grounds: value.grounds, water: value.water, temp: value.temp, grinderId: value.grinderId, dripperId: value.dripperId, grinderName: value.grinderName || "", dripperName: value.dripperName || "", grind: value.grind, pours: pours.map(p => ({ ...p })) }, ...favorites]);
+    saveFavorites([{ id: uid(), name: favName.trim(), grounds: value.grounds, water: value.water, temp: value.temp, grinderId: value.grinderId, dripperId: value.dripperId, grinderName: value.grinderName || "", dripperName: value.dripperName || "", grind: value.grind, pourUnit: value.pourUnit || "g", pours: pours.map(p => ({ ...p })) }, ...favorites]);
     setFavName(""); setNaming(false);
     notify("定番レシピに登録しました");
   };
@@ -1464,13 +1484,24 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
       {(dripText || grindText) && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8 }}>「My棚に登録」すると、次から選択できます。</div>}
       <div style={{ background: "var(--paper)", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "var(--mocha)", marginBottom: 18 }}>抽出比率 <b style={{ color: "var(--terra)" }}>1 : {ratio}</b></div>
 
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 8 }}>注ぎ（レシピ）</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)" }}>注ぎ（レシピ）</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>注ぐ量の単位</span>
+          <div style={{ display: "inline-flex", border: "1.5px solid var(--line)", borderRadius: 20, overflow: "hidden" }}>
+            {[["g", "g"], ["%", "%"]].map(([u, l]) => {
+              const on = (isPct ? "%" : "g") === u;
+              return <button key={u} onClick={() => setUnit(u)} style={{ background: on ? "var(--mocha)" : "transparent", color: on ? "var(--cream)" : "var(--mocha)", border: "none", padding: "4px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{l}</button>;
+            })}
+          </div>
+        </div>
+      </div>
       <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse", marginBottom: 10 }}>
-        <colgroup><col style={{ width: "27%" }} /><col style={{ width: "30%" }} /><col style={{ width: "20%" }} /><col style={{ width: "15%" }} /><col style={{ width: "8%" }} /></colgroup>
+        <colgroup><col style={{ width: "20%" }} /><col style={{ width: "28%" }} /><col style={{ width: "17%" }} /><col style={{ width: "14%" }} /><col style={{ width: "15%" }} /><col style={{ width: "6%" }} /></colgroup>
         <thead>
           <tr style={{ borderBottom: "1.5px solid var(--mocha)" }}>
-            {["投数", "時間", "注ぐ量", <span key="t">総量<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>スケール表示</span></span>, ""].map((h, i) => (
-              <th key={i} style={{ fontSize: 11.5, fontWeight: 700, color: "var(--mocha)", padding: "0 0 7px", textAlign: i === 4 ? "right" : "center" }}>{h}</th>
+            {["投数", "時間", <span key="a">注ぐ量<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>{isPct ? "総湯量比 %" : "g"}</span></span>, <span key="r">速さ<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>ml/秒</span></span>, <span key="t">総量<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>スケール表示</span></span>, ""].map((h, i) => (
+              <th key={i} style={{ fontSize: 11.5, fontWeight: 700, color: "var(--mocha)", padding: "0 0 7px", textAlign: i === 5 ? "right" : "center", verticalAlign: "bottom" }}>{h}</th>
             ))}
           </tr>
         </thead>
@@ -1480,29 +1511,47 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
             const min = Math.floor((p.t || 0) / 60), sec = (p.t || 0) % 60;
             return (
               <tr key={i} style={{ borderBottom: "1px dotted var(--line)" }}>
-                <td style={{ padding: "7px 3px" }}>
+                <td style={{ padding: "7px 2px" }}>
                   <input style={cellInput} value={p.label} onChange={e => { const pp = [...pours]; pp[i] = { ...pp[i], label: e.target.value }; setValue({ ...value, pours: pp }); }} />
                 </td>
-                <td style={{ padding: "7px 3px" }}>
+                <td style={{ padding: "7px 2px" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2 }}>
                     <NumberInput value={min} onChange={v => setPourTime(i, "m", v)} style={{ ...cellInput, padding: "8px 2px" }} />
                     <span style={{ color: "var(--muted)", fontWeight: 700 }}>:</span>
                     <NumberInput value={sec} onChange={v => setPourTime(i, "s", v)} style={{ ...cellInput, padding: "8px 2px" }} />
                   </div>
                 </td>
-                <td style={{ padding: "7px 3px" }}>
-                  <NumberInput value={p.ml} onChange={v => updatePour(i, "ml", v)} style={cellInput} />
+                <td style={{ padding: "7px 2px" }}>
+                  {isPct
+                    ? <NumberInput value={pourPct(p, value.water)} onChange={v => setPourPct(i, v)} style={cellInput} />
+                    : <NumberInput value={p.ml} onChange={v => updatePour(i, "ml", v)} style={cellInput} />}
                 </td>
-                <td style={{ padding: "7px 3px", textAlign: "center", fontWeight: 700, fontSize: 13.5, color: "var(--bean)" }}>{cum}g</td>
+                <td style={{ padding: "7px 2px" }}>
+                  <NumberInput value={p.rate ?? defaultRate} onChange={v => updatePour(i, "rate", v)} style={cellInput} />
+                </td>
+                <td style={{ padding: "7px 2px", textAlign: "center", fontWeight: 700, fontSize: 13.5, color: "var(--bean)", lineHeight: 1.2 }}>
+                  {cum}g
+                  {isPct && <div style={{ fontSize: 10, fontWeight: 400, color: "var(--muted)" }}>+{Number(p.ml) || 0}g</div>}
+                </td>
                 <td style={{ padding: "7px 0", textAlign: "right" }}>
-                  <button onClick={() => setValue({ ...value, pours: pours.filter((_, j) => j !== i) })} style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 18, cursor: "pointer" }}>×</button>
+                  <button onClick={() => setValue({ ...value, pours: pours.filter((_, j) => j !== i) })} style={{ background: "none", border: "none", color: "var(--muted)", fontSize: 18, cursor: "pointer", padding: 0 }}>×</button>
                 </td>
               </tr>
             );
           })}
         </tbody>
       </table>
-      <button onClick={() => setValue({ ...value, pours: [...pours, { label: `${pours.length + 1}投目`, t: pours.length === 0 ? 0 : (pours[pours.length - 1].t || 0) + 45, ml: 60 }] })}
+      {isPct && pours.length > 0 && (
+        <div style={{ fontSize: 12, marginBottom: 10, color: pctSum === 100 ? "var(--muted)" : "var(--terra)", fontWeight: pctSum === 100 ? 400 : 700 }}>
+          合計 {pctSum}%{pctSum === 100 ? `（総湯量 ${value.water}ml）` : ` — 100%になるよう調整してください（現在 ${cum}g / 総湯量 ${value.water}ml）`}
+        </div>
+      )}
+      <button onClick={() => {
+        const last = pours[pours.length - 1];
+        const np = { label: `${pours.length + 1}投目`, t: pours.length === 0 ? 0 : (last.t || 0) + 45, ml: 60, rate: last?.rate ?? defaultRate };
+        if (isPct) { np.pct = pctSum < 100 ? Math.round((100 - pctSum) * 10) / 10 : 20; np.ml = pctToMl(np.pct, value.water); }
+        setValue({ ...value, pours: [...pours, np] });
+      }}
         style={{ background: "var(--cream)", border: "1.5px dashed var(--line)", borderRadius: 12, padding: "9px", width: "100%", color: "var(--mocha)", cursor: "pointer", fontFamily: "inherit", fontSize: 13, marginBottom: 18 }}>＋ 投を追加</button>
     </>
   );
@@ -1511,8 +1560,8 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
 // ====== STEP2 レシピ ======
 // ====== ドリップタイマー ======
 function DripTimer({ draft, grinders, drippers, onFinish, onExit }) {
-  const pours = (draft.pours || []).map(p => ({ ...p, t: Number(p.t) || 0, ml: Number(p.ml) || 0 }));
-  const flowRate = Number(draft.flowRate) || 4; // ml/s
+  const flowRate = Number(draft.flowRate) || 4; // ml/s（投ごとの速さが無い古いデータ用）
+  const pours = (draft.pours || []).map(p => ({ ...p, t: Number(p.t) || 0, ml: Number(p.ml) || 0, rate: Number(p.rate) || flowRate }));
   const [countdown, setCountdown] = useState(3);
   const [started, setStarted] = useState(false);
   const [elapsed, setElapsed] = useState(0); // 秒（小数）
@@ -1541,7 +1590,7 @@ function DripTimer({ draft, grinders, drippers, onFinish, onExit }) {
 
   // 各投の注ぎ時間（秒）と終了時刻
   const withTiming = pours.map(p => {
-    const dur = Math.max(3, Math.round(p.ml / flowRate)); // 注ぎにかかる目安秒数
+    const dur = Math.max(3, Math.round(p.ml / p.rate)); // 注ぎにかかる目安秒数
     return { ...p, dur, end: p.t + dur };
   });
   const totalEnd = withTiming.length ? Math.max(...withTiming.map(p => p.end)) + 30 : 0; // 最後の投＋落ち切り30秒
@@ -1569,7 +1618,7 @@ function DripTimer({ draft, grinders, drippers, onFinish, onExit }) {
   const cumTarget = withTiming.slice(0, curIdx + 1).reduce((s, p) => s + p.ml, 0);
   const prevCum = withTiming.slice(0, curIdx).reduce((s, p) => s + p.ml, 0);
   // 注ぎ中はリアルタイムに増える推定値
-  const liveGrams = pouring && cur ? Math.min(cumTarget, prevCum + (elapsed - cur.t) * flowRate) : cumTarget;
+  const liveGrams = pouring && cur ? Math.min(cumTarget, prevCum + (elapsed - cur.t) * cur.rate) : cumTarget;
 
   // 円の進捗（注ぎ中＝注ぎの進捗 / 待機中＝次の投までの進捗）
   const ring = (() => {
@@ -1690,19 +1739,6 @@ function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDr
         <button onClick={() => setScreen("rec1")} style={{ background: "rgba(241,232,219,.18)", border: "none", color: "var(--cream)", fontSize: 12, fontWeight: 700, cursor: "pointer", padding: "5px 12px", borderRadius: 20 }}>変更</button>
       </div>
       <RecipeFields value={draft} setValue={setDraft} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} />
-
-      <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 14, marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)" }}>注ぎの速さ</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>タイマーで「何秒かけて注ぐか」の目安になります</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <NumberInput value={draft.flowRate ?? 4} onChange={v => setDraft({ ...draft, flowRate: v })} style={{ ...inputStyle, width: 64, textAlign: "center", padding: "8px 6px" }} />
-            <span style={{ fontSize: 12.5, color: "var(--muted)" }}>ml/秒</span>
-          </div>
-        </div>
-      </div>
 
       <Btn onClick={() => setScreen("timer")} style={{ width: "100%", marginBottom: 10, background: "var(--crema)", color: "var(--espresso)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
         <Icon name="brew" size={18} />ドリップスタート
