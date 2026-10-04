@@ -790,43 +790,11 @@ function BeanSummary({ logs, openLog, tab, setTab }) {
     ...(lowLogs.length ? { 低満足: Number(avgOf(lowLogs, ax).toFixed(1)) } : {}),
   }));
 
-  // ---- ③ 改善の軌跡 ----
-  const trailData = sorted.map((l, i) => {
-    const prev = sorted[i - 1];
-    const pourCount = (l.pours || []).length;
-    const prevPourCount = (prev?.pours || []).length;
-    const diff = (cur, pv) => {
-      if (!prev || pv == null || cur == null || pv === cur) return null;
-      return cur > pv ? "up" : "down";
-    };
-    // 味の変化（前回から動いた軸だけを一文字略で）
-    const TASTE_SHORT = { 酸味: "酸", 苦味: "苦", 甘味: "甘", コク: "コク", 濃度感: "濃" };
-    const tasteChanges = prev ? Object.keys(TASTE_SHORT).map(ax => {
-      const cur = l.taste?.[ax], pv = prev.taste?.[ax];
-      if (cur == null || pv == null || cur === pv) return null;
-      return { label: TASTE_SHORT[ax], dir: cur > pv ? "up" : "down" };
-    }).filter(Boolean) : [];
-    return {
-      n: l._n, date: new Date(l.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" }),
-      grind: l.grind, grindDir: diff(l.grind, prev?.grind),
-      temp: l.temp, tempDir: diff(l.temp, prev?.temp),
-      pourCount, pourDir: prev ? diff(pourCount, prevPourCount) : null,
-      tasteChanges,
-      satisfaction: l.satisfaction, satDir: diff(l.satisfaction, prev?.satisfaction),
-      id: l.id,
-    };
-  });
-
   const tabStyle = (k) => ({
     flex: 1, padding: "8px 4px", fontSize: 12, fontWeight: 700, background: "none",
     border: "none", borderBottom: tab === k ? "2.5px solid var(--terra)" : "2.5px solid transparent",
     color: tab === k ? "var(--terra)" : "var(--muted)", cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif",
   });
-
-  const DirBadge = ({ dir }) => {
-    if (!dir) return null;
-    return <span style={{ marginLeft: 4, fontSize: 10, color: dir === "up" ? "#e07b39" : "#5b9bd5" }}>{dir === "up" ? "▲" : "▼"}</span>;
-  };
 
   const SatDot = ({ v }) => <span style={{ color: "var(--crema)" }}>{"★".repeat(v)}<span style={{ color: "var(--line)" }}>{"★".repeat(5 - v)}</span></span>;
 
@@ -835,7 +803,6 @@ function BeanSummary({ logs, openLog, tab, setTab }) {
       <div style={{ display: "flex", borderBottom: "1px solid var(--line)" }}>
         <button style={tabStyle("satisfaction")} onClick={() => setTab("satisfaction")}>満足度推移</button>
         <button style={tabStyle("flavor")} onClick={() => setTab("flavor")}>フレーバー</button>
-        <button style={tabStyle("trail")} onClick={() => setTab("trail")}>改善の軌跡</button>
       </div>
 
       <div style={{ padding: "16px 12px" }}>
@@ -890,58 +857,6 @@ function BeanSummary({ logs, openLog, tab, setTab }) {
           </>
         )}
 
-        {tab === "trail" && (
-          <>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>▲▼は前回からの変化。<span style={{ color: "var(--terra)" }}>▲上がった</span> / <span style={{ color: "#5b9bd5" }}>▼下がった</span>。味は酸=酸味 苦=苦味 甘=甘味 濃=濃度感。</div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                <thead>
-                  <tr>
-                    <th style={{ padding: "2px 6px" }}></th>
-                    <th colSpan={3} style={{ padding: "4px 6px", textAlign: "center", fontSize: 10.5, fontWeight: 700, color: "var(--muted)", letterSpacing: ".05em" }}>調整した項目</th>
-                    <th colSpan={2} style={{ padding: "4px 6px", textAlign: "center", fontSize: 10.5, fontWeight: 700, color: "var(--terra)", letterSpacing: ".05em", borderLeft: "2px solid var(--line)", background: "rgba(179,85,47,.05)" }}>結果</th>
-                  </tr>
-                  <tr style={{ borderBottom: "1.5px solid var(--line)" }}>
-                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700, whiteSpace: "nowrap" }}>回</th>
-                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700 }}>粒度</th>
-                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700 }}>湯温</th>
-                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700 }}>投数</th>
-                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700, borderLeft: "2px solid var(--line)", background: "rgba(179,85,47,.05)" }}>味の変化</th>
-                    <th style={{ padding: "6px 6px", textAlign: "center", color: "var(--muted)", fontWeight: 700, background: "rgba(179,85,47,.05)" }}>満足度</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trailData.map((r, i) => (
-                    <tr key={r.id} onClick={() => openLog(r.id)} style={{ borderBottom: "1px solid var(--line)", cursor: "pointer", background: i % 2 === 0 ? "transparent" : "rgba(227,216,200,.2)" }}>
-                      <td style={{ padding: "8px 6px", textAlign: "center", color: "var(--muted)" }}>{r.n}</td>
-                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.grindDir ? 700 : 400, color: r.grindDir ? "var(--terra)" : "var(--espresso)" }}>
-                        {r.grind}<DirBadge dir={r.grindDir} />
-                      </td>
-                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.tempDir ? 700 : 400, color: r.tempDir ? "var(--terra)" : "var(--espresso)" }}>
-                        {r.temp}℃<DirBadge dir={r.tempDir} />
-                      </td>
-                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.pourDir ? 700 : 400, color: r.pourDir ? "var(--terra)" : "var(--espresso)" }}>
-                        {r.pourCount}<DirBadge dir={r.pourDir} />
-                      </td>
-                      <td style={{ padding: "8px 6px", textAlign: "center", whiteSpace: "nowrap", minWidth: 54, borderLeft: "2px solid var(--line)", background: "rgba(179,85,47,.04)" }}>
-                        {r.tasteChanges.length === 0
-                          ? <span style={{ color: "var(--line)" }}>—</span>
-                          : <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", justifyContent: "center" }}>
-                              {r.tasteChanges.map((c, j) => (
-                                <span key={j} style={{ fontSize: 11.5, fontWeight: 700, color: c.dir === "up" ? "var(--terra)" : "#5b9bd5" }}>{c.label}{c.dir === "up" ? "▲" : "▼"}</span>
-                              ))}
-                            </span>}
-                      </td>
-                      <td style={{ padding: "8px 6px", textAlign: "center", fontWeight: r.satDir ? 700 : 400, background: "rgba(179,85,47,.04)" }}>
-                        <SatDot v={r.satisfaction} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
       </div>
     </div>
   );
