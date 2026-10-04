@@ -141,15 +141,40 @@ function Icon({ name, size = 22 }) {
 }
 
 // 数値入力（空欄OK・先頭ゼロなし・確定時に空なら0）
-function NumberInput({ value, onChange, style, placeholder }) {
+function NumberInput({ value, onChange, style, placeholder, ...rest }) {
   const [focused, setFocused] = useState(false);
   const [str, setStr] = useState("");
   const display = focused ? str : (value === "" || value === null || value === undefined ? "" : String(value));
   return (
-    <input type="text" inputMode="decimal" placeholder={placeholder} style={style} value={display}
-      onFocus={() => { setFocused(true); setStr(value === 0 || value ? String(value) : ""); }}
+    <input type="text" inputMode="decimal" placeholder={placeholder} style={style} value={display} {...rest}
+      onFocus={e => { setFocused(true); setStr(value === 0 || value ? String(value) : ""); selectAllSoon(e.target); }}
       onChange={e => { let v = e.target.value.replace(/[^0-9.]/g, ""); v = v.replace(/^0+(?=\d)/, ""); setStr(v); if (v !== "" && !isNaN(Number(v))) onChange(Number(v)); }}
       onBlur={() => { setFocused(false); if (str === "" || isNaN(Number(str))) onChange(0); }} />
+  );
+}
+
+// フォーカス直後に全選択（クリック時のmouseupで選択が外れるのを避けるため次フレームで）
+const selectAllSoon = (el) => requestAnimationFrame(() => { if (document.activeElement === el) el.select(); });
+
+// "45"→45秒 / "130"→1分30秒 / "1:30"→1分30秒 / "90"→1分30秒（数字だけで入力できるように）
+const parseTime = (str) => {
+  const t = String(str).trim();
+  if (!t) return 0;
+  if (t.includes(":")) { const [m, sec] = t.split(":"); return (Number(m) || 0) * 60 + (Number(sec) || 0); }
+  const d = t.replace(/D/g, "");
+  if (d.length <= 2) return Number(d) || 0;
+  return Number(d.slice(0, -2)) * 60 + Number(d.slice(-2));
+};
+const fmtMSS = (s) => `${Math.floor((s || 0) / 60)}:${String((s || 0) % 60).padStart(2, "0")}`;
+
+function TimeInput({ value, onChange, style, ...rest }) {
+  const [focused, setFocused] = useState(false);
+  const [str, setStr] = useState("");
+  return (
+    <input type="text" inputMode="numeric" placeholder="0:00" style={style} value={focused ? str : fmtMSS(value)} {...rest}
+      onFocus={e => { setFocused(true); setStr(fmtMSS(value)); selectAllSoon(e.target); }}
+      onChange={e => { const v = e.target.value.replace(/[^0-9:]/g, ""); setStr(v); onChange(parseTime(v)); }}
+      onBlur={() => setFocused(false)} />
   );
 }
 
@@ -1386,12 +1411,23 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
       })}
     </div>
   );
-  const setPourTime = (i, part, v) => {
-    const p = [...pours]; const cur = p[i].t || 0;
-    const min = part === "m" ? Number(v) : Math.floor(cur / 60);
-    const sec = part === "s" ? Number(v) : cur % 60;
-    p[i] = { ...p[i], t: min * 60 + sec }; setValue({ ...value, pours: p });
+  const setPourTime = (i, t) => { const p = [...pours]; p[i] = { ...p[i], t }; setValue({ ...value, pours: p }); };
+  // 表のセル移動（PC）：↑↓・Enterで上下、←→はカーソルが端にあるか全選択のときに左右
+  const tableRef = useRef(null);
+  const onCellKey = (e) => {
+    if (e.nativeEvent.isComposing) return; // 日本語変換中の矢印・Enterは変換操作に使う
+    const el = e.target, r = Number(el.dataset.row), c = Number(el.dataset.col);
+    const all = el.selectionStart === 0 && el.selectionEnd === el.value.length;
+    let dr = 0, dc = 0;
+    if (e.key === "ArrowUp") dr = -1;
+    else if (e.key === "ArrowDown" || e.key === "Enter") dr = e.shiftKey ? -1 : 1;
+    else if (e.key === "ArrowLeft" && (all || el.selectionStart === 0)) dc = -1;
+    else if (e.key === "ArrowRight" && (all || el.selectionEnd === el.value.length)) dc = 1;
+    else return;
+    const to = tableRef.current?.querySelector(`[data-row="${r + dr}"][data-col="${c + dc}"]`);
+    if (to) { e.preventDefault(); to.focus(); }
   };
+  const cell = (i, col) => ({ "data-row": i, "data-col": col, onKeyDown: onCellKey });
   const loadFav = (f) => {
     setValue({ ...value, grounds: f.grounds, water: f.water, temp: f.temp, grinderId: f.grinderId, dripperId: f.dripperId ?? value.dripperId, grinderName: f.grinderName || "", dripperName: f.dripperName || "", grind: f.grind, pourUnit: f.pourUnit || "g", rateMode: f.rateMode || "all", flowRate: f.flowRate || 4, pours: f.pours.map(p => ({ ...p })) });
     setDripText(!!f.dripperName); setGrindText(!!f.grinderName);
@@ -1528,8 +1564,8 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
             : "投ごとに速さを設定します（表の「速さ」列）"}
         </div>
       </div>
-      <table style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse", marginBottom: 10 }}>
-        <colgroup>{(showRateCol ? [20, 28, 17, 14, 15, 6] : [24, 30, 20, 18, 8]).map((w, i) => <col key={i} style={{ width: `${w}%` }} />)}</colgroup>
+      <table ref={tableRef} style={{ width: "100%", tableLayout: "fixed", borderCollapse: "collapse", marginBottom: 10 }}>
+        <colgroup>{(showRateCol ? [21, 20, 19, 15, 18, 7] : [25, 23, 22, 22, 8]).map((w, i) => <col key={i} style={{ width: `${w}%` }} />)}</colgroup>
         <thead>
           <tr style={{ borderBottom: "1.5px solid var(--mocha)" }}>
             {["投数", "時間", <span key="a">注ぐ量<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>{isPct ? "総湯量比 %" : "g"}</span></span>, showRateCol && <span key="r">速さ<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>ml/秒</span></span>, <span key="t">総量<br /><span style={{ fontSize: 9, fontWeight: 400, color: "var(--muted)" }}>スケール表示</span></span>, ""].filter(h => h !== false).map((h, i, arr) => (
@@ -1540,26 +1576,21 @@ function RecipeFields({ value, setValue, grinders, saveGrinders, drippers, saveD
         <tbody>
           {pours.map((p, i) => {
             cum += Number(p.ml) || 0;
-            const min = Math.floor((p.t || 0) / 60), sec = (p.t || 0) % 60;
             return (
               <tr key={i} style={{ borderBottom: "1px dotted var(--line)" }}>
                 <td style={{ padding: "7px 2px" }}>
-                  <input style={cellInput} value={p.label} onChange={e => { const pp = [...pours]; pp[i] = { ...pp[i], label: e.target.value }; setValue({ ...value, pours: pp }); }} />
+                  <input style={cellInput} value={p.label} {...cell(i, 0)} onFocus={e => selectAllSoon(e.target)} onChange={e => { const pp = [...pours]; pp[i] = { ...pp[i], label: e.target.value }; setValue({ ...value, pours: pp }); }} />
                 </td>
                 <td style={{ padding: "7px 2px" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2 }}>
-                    <NumberInput value={min} onChange={v => setPourTime(i, "m", v)} style={{ ...cellInput, padding: "8px 2px" }} />
-                    <span style={{ color: "var(--muted)", fontWeight: 700 }}>:</span>
-                    <NumberInput value={sec} onChange={v => setPourTime(i, "s", v)} style={{ ...cellInput, padding: "8px 2px" }} />
-                  </div>
+                  <TimeInput value={p.t || 0} onChange={t => setPourTime(i, t)} style={cellInput} {...cell(i, 1)} />
                 </td>
                 <td style={{ padding: "7px 2px" }}>
                   {isPct
-                    ? <NumberInput value={pourPct(p, value.water)} onChange={v => setPourPct(i, v)} style={cellInput} />
-                    : <NumberInput value={p.ml} onChange={v => updatePour(i, "ml", v)} style={cellInput} />}
+                    ? <NumberInput value={pourPct(p, value.water)} onChange={v => setPourPct(i, v)} style={cellInput} {...cell(i, 2)} />
+                    : <NumberInput value={p.ml} onChange={v => updatePour(i, "ml", v)} style={cellInput} {...cell(i, 2)} />}
                 </td>
                 {showRateCol && <td style={{ padding: "7px 2px" }}>
-                  <NumberInput value={p.rate ?? defaultRate} onChange={v => updatePour(i, "rate", v)} style={cellInput} />
+                  <NumberInput value={p.rate ?? defaultRate} onChange={v => updatePour(i, "rate", v)} style={cellInput} {...cell(i, 3)} />
                 </td>}
                 <td style={{ padding: "7px 2px", textAlign: "center", fontWeight: 700, fontSize: 13.5, color: "var(--bean)", lineHeight: 1.2 }}>
                   {cum}g
