@@ -49,17 +49,18 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 // ====== ストレージ（Supabase user_data テーブル） ======
 // ログイン中のユーザーの行だけを読み書きする（RLSで保護）。
 let _uid = null; // 現在のユーザーID（ログイン時にセット）
+let _ready = false; // このユーザーのデータを正しく読み込めたか。読み込み前・失敗時は一切書き込まない
 const store = {
-  async get(k, fallback) {
-    try {
-      const { data, error } = await supabase.from("user_data").select("value").eq("key", k).maybeSingle();
-      if (error || !data) return fallback;
-      return data.value ?? fallback;
-    } catch { return fallback; }
+  // 「データが無い」と「読み込みに失敗した」を区別する。失敗時は例外を投げる
+  // （以前は失敗を「データ無し」と扱い、初期データで本物のデータを上書きしていた）
+  async load(k) {
+    const { data, error } = await supabase.from("user_data").select("value").eq("key", k).maybeSingle();
+    if (error) throw error;
+    return data ? { exists: true, value: data.value } : { exists: false, value: undefined };
   },
-  async set(k, v) {
+  async set(k, v, { force = false } = {}) {
     try {
-      if (!_uid) return;
+      if (!_uid || (!_ready && !force)) return;
       await supabase.from("user_data").upsert({ user_id: _uid, key: k, value: v });
     } catch (e) { /* 通信エラー等 */ }
   },
@@ -214,6 +215,8 @@ export default function App() {
   const [session, setSession] = useState(null);
   const [authReady, setAuthReady] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [loadTry, setLoadTry] = useState(0); // 再試行用
 
   // セッション監視（ログイン/ログアウト）
   useEffect(() => {
@@ -222,41 +225,56 @@ export default function App() {
       setSession(data.session);
       setAuthReady(true);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       _uid = s?.user?.id || null;
       setSession(s);
-      setScreen("home"); // ログイン/ログアウト時はホームに戻す
+      // トークン自動更新（TOKEN_REFRESHED）などでは画面を動かさない
+      if (event === "SIGNED_IN" || event === "SIGNED_OUT") setScreen("home");
       if (!s) {
-        setLoaded(false);
+        _ready = false;
+        setLoaded(false); setLoadError(false);
         setBeans([]); setGrinders([]); setDrippers([]); setFavorites([]); setLogs([]); setProposed(null); setProfile(null);
       }
     });
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // ログイン後にこのユーザーのデータを読み込む
+  // ログイン後にこのユーザーのデータを読み込む。
+  // セッションのオブジェクトはトークン更新のたびに変わるので、ユーザーIDが変わったときだけ読み込む
+  const userId = session?.user?.id;
   useEffect(() => {
-    if (!session) return;
+    if (!userId) return;
     let cancelled = false;
     (async () => {
-      setLoaded(false);
-      let b = await store.get("cd_beans", null);
-      if (!b) { b = [SEED_BEAN]; await store.set("cd_beans", b); }
-      let g = await store.get("cd_grinders", null);
-      if (!g) { g = [SEED_GRINDER]; await store.set("cd_grinders", g); }
-      let d = await store.get("cd_drippers", null);
-      if (!d) { d = [SEED_DRIPPER]; await store.set("cd_drippers", d); }
-      const fav = await store.get("cd_favorites", []);
-      const lg = await store.get("cd_logs", []);
-      const pr = await store.get("cd_proposed", null);
-      let pf = await store.get("cd_profile", null);
-      if (!pf) { pf = { name: session.user.user_metadata?.display_name || (session.user.email || "user").split("@")[0], since: Date.now() }; await store.set("cd_profile", pf); }
-      if (cancelled) return;
-      setBeans(b); setGrinders(g); setDrippers(d); setFavorites(fav); setLogs(lg); setProposed(pr); setProfile(pf);
-      setLoaded(true);
+      _ready = false;
+      setLoaded(false); setLoadError(false);
+      try {
+        // ログインが有効かをサーバーに確認してから読む（無効なトークンだとRLSでエラーなしの「0件」が返り、新規ユーザーと誤認するため）
+        const { data: u, error: ue } = await supabase.auth.getUser();
+        if (ue || u?.user?.id !== userId) throw ue || new Error("auth mismatch");
+        const keys = ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs", "cd_proposed", "cd_profile"];
+        const r = Object.fromEntries(await Promise.all(keys.map(async k => [k, await store.load(k)])));
+        if (cancelled) return;
+        // 初期データは「本当に初めてのユーザー」（どのデータも一度も保存されていない）にだけ入れる
+        const isNewUser = keys.every(k => !r[k].exists);
+        const seed = async (k, v) => { if (isNewUser && !r[k].exists) { await store.set(k, v, { force: true }); return v; } return r[k].value; };
+        const b = await seed("cd_beans", [SEED_BEAN]);
+        const g = await seed("cd_grinders", [SEED_GRINDER]);
+        const d = await seed("cd_drippers", [SEED_DRIPPER]);
+        let pf = r.cd_profile.value;
+        if (!r.cd_profile.exists) { pf = { name: session.user.user_metadata?.display_name || (session.user.email || "user").split("@")[0], since: Date.now() }; await store.set("cd_profile", pf, { force: true }); }
+        if (cancelled) return;
+        setBeans(b || []); setGrinders(g || []); setDrippers(d || []);
+        setFavorites(r.cd_favorites.value || []); setLogs(r.cd_logs.value || []); setProposed(r.cd_proposed.value ?? null); setProfile(pf);
+        _ready = true;
+        setLoaded(true);
+      } catch (e) {
+        // 読み込みに失敗：何も書き込まず、再試行を促す
+        if (!cancelled) setLoadError(true);
+      }
     })();
     return () => { cancelled = true; };
-  }, [session]);
+  }, [userId, loadTry]);
 
   const saveProfile = (p) => { setProfile(p); store.set("cd_profile", p); };
   const saveBeans = (b) => { setBeans(b); store.set("cd_beans", b); };
@@ -359,6 +377,16 @@ export default function App() {
   if (!authReady) return <div style={{ minHeight: "100vh", background: "var(--cream)" }} />;
 
   if (!session) return <Auth />;
+
+  if (loadError) return (
+    <div style={{ minHeight: "100vh", background: "var(--cream)", display: "flex", alignItems: "center", justifyContent: "center", padding: 28 }}>
+      <div style={{ background: "var(--paper)", borderRadius: 20, padding: 24, maxWidth: 340, width: "100%", textAlign: "center" }}>
+        <div className="cd-serif" style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>データを読み込めませんでした</div>
+        <div style={{ fontSize: 13, color: "var(--muted)", lineHeight: 1.7, marginBottom: 18 }}>通信状態を確認して、もう一度お試しください。保存されているデータには影響ありません。</div>
+        <Btn style={{ width: "100%" }} onClick={() => setLoadTry(n => n + 1)}>再試行</Btn>
+      </div>
+    </div>
+  );
 
   if (!loaded) return <div style={{ minHeight: "100vh", background: "var(--cream)" }} />;
 
