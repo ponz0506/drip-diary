@@ -33,12 +33,21 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
 ::-webkit-scrollbar{width:8px;}::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px;}
 `;
 
+// 香りの選択肢。SCA「Coffee Taster's Flavor Wheel」（2016年、SCA・World Coffee Research）の分類を基にしている。
+// 以前の16語（柑橘・ベリー・トロピカル・完熟果実・ナッツ・ミルクチョコ・ダークチョコ・キャラメル・花・紅茶・ハーブ・緑茶・
+// スパイス・黒糖・土っぽい・焦げ・燻製）はすべて残し、過去の記録の香りもそのまま使えるようにしている
 const FLAVOR_TREE = {
-  "フルーツ系": ["柑橘", "ベリー", "トロピカル", "完熟果実"],
-  "ナッツ・チョコ系": ["ナッツ", "ミルクチョコ", "ダークチョコ", "キャラメル"],
-  "花・ハーブ系": ["花", "紅茶", "ハーブ", "緑茶"],
-  "スパイス・その他": ["スパイス", "黒糖", "土っぽい", "焦げ・燻製"],
+  "フルーツ": ["柑橘", "ベリー", "ブドウ", "リンゴ・洋梨", "桃・杏", "トロピカル", "ドライフルーツ", "完熟果実"],
+  "花・お茶": ["花", "ジャスミン", "紅茶", "緑茶"],
+  "甘さ": ["キャラメル", "黒糖", "はちみつ", "メープル", "バニラ"],
+  "ナッツ・チョコ": ["ナッツ", "アーモンド", "ミルクチョコ", "ダークチョコ"],
+  "スパイス": ["スパイス", "シナモン", "クローブ", "黒こしょう"],
+  "発酵・お酒": ["ワイン", "ラム・洋酒", "発酵感"],
+  "ハーブ・植物": ["ハーブ", "青草"],
+  "ロースト": ["トースト・穀物", "タバコ", "焦げ・燻製", "土っぽい"],
 };
+// 香り（小分類）から、今の大分類を引く（以前の大分類名「フルーツ系」などで保存された記録の表示・編集用）
+const flavorBigOf = (small) => Object.keys(FLAVOR_TREE).find(b => FLAVOR_TREE[b].includes(small)) || "";
 const TASTE_AXES = ["酸味", "苦味", "甘味", "コク", "濃度感", "雑味"];
 const ROAST_LEVELS = ["浅煎り", "中浅煎り", "中煎り", "中深煎り", "深煎り"];
 const AVATAR_EMOJIS = ["☕", "🫖", "🌱", "🫘", "🍵", "🔥", "💧", "⏱️", "📓", "✨", "🐈", "🌙"];
@@ -446,7 +455,7 @@ export default function App() {
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
       grind: preset?.grind || 20, flowRate: preset?.flowRate || 4, pourUnit: preset?.pourUnit || "g", rateMode: preset?.rateMode || "all", pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
       taste: editId ? (preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 }) : { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
-      flavorBig: editId ? (preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
+      flavorBig: editId ? (flavorBigOf(preset?.flavorSmall) || preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
       satisfaction: editId ? (preset?.satisfaction || 3) : 3, createdAt: editId ? (preset?.createdAt || Date.now()) : Date.now(),
       chat: editId ? (preset?.chat || []) : [], nextRecipe: editId ? (preset?.nextRecipe || null) : null,
     });
@@ -1486,7 +1495,7 @@ function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit, onRequ
             <span style={{ fontSize: 12, color: "var(--mocha)", width: 14 }}>{l.taste[ax]}</span>
           </div>
         ))}
-        {(l.flavorBig || l.flavorSmall) && <div style={{ fontSize: 13, color: "var(--mocha)", marginTop: 10 }}>フレーバー：{[l.flavorBig, l.flavorSmall].filter(Boolean).join(" → ")}</div>}
+        {(l.flavorBig || l.flavorSmall) && <div style={{ fontSize: 13, color: "var(--mocha)", marginTop: 10 }}>フレーバー：{[flavorBigOf(l.flavorSmall) || l.flavorBig, l.flavorSmall].filter(Boolean).join(" → ")}</div>}
         {l.memo && <div style={{ fontSize: 13, color: "var(--bean)", marginTop: 8, fontStyle: "italic", background: "var(--cream)", padding: "8px 12px", borderRadius: 10 }}>“{l.memo}”</div>}
       </Section>
 
@@ -2316,7 +2325,7 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
       </div>
       {draft.flavorBig && (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }} className="cd-fade">
-          {FLAVOR_TREE[draft.flavorBig].map(s => (
+          {(FLAVOR_TREE[draft.flavorBig] || []).map(s => (
             <Chip key={s} small active={draft.flavorSmall === s} onClick={() => setDraft({ ...draft, flavorSmall: s })}>{s}</Chip>
           ))}
         </div>

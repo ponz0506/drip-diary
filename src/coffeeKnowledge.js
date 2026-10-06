@@ -3,9 +3,8 @@
 //
 // ・AIに風味を自由に書かせると、もっともらしい誤りが混ざるため、
 //   風味の説明はこの表から表示し、AIには表の中から組み合わせを選ばせる。
-// ・香りの言葉は、アプリのフレーバー選択（FLAVOR_TREE）と同じ語彙だけを使う。
-//   柑橘 / ベリー / トロピカル / 完熟果実 / ナッツ / ミルクチョコ / ダークチョコ / キャラメル /
-//   花 / 紅茶 / ハーブ / 緑茶 / スパイス / 黒糖 / 土っぽい / 焦げ・燻製
+// ・香りの言葉は、アプリのフレーバー選択（App.jsx の FLAVOR_TREE、SCA Coffee Taster's Flavor Wheel 準拠）と
+//   同じ語彙だけを使う（香りを増やすときは両方をそろえる）。
 // ・ここに書くのは「一般的にそう言われることが多い傾向」。同じ産地でも地域・農園・品種・
 //   焙煎で風味は大きく変わる。内容は出典を確認したうえで、人が見直して更新する。
 //
@@ -15,6 +14,7 @@
 //  [S3] Cameron's Coffee「A Guide to the Flavors of Popular Coffee Origins」 https://cameronscoffee.com/blog/coffee-origins-and-their-characteristics
 //  [S4] Breville「What can you expect from different specialty coffee origins?」 https://www.breville.com/ca/en/coffee-journey/inspiration/origins/beans-taste.html
 //  [S5] Birch Coffee「Guide to Specialty Coffee Origins」 https://wholesale.birchcoffee.com/blog/guide-to-specialty-coffee-origins
+//  [S10] SCA / World Coffee Research「Coffee Taster's Flavor Wheel」（2016、香りの語彙の分類） https://mycoffeeexplorer.com/blog/coffee-flavor-wheel-tasting-notes
 //  [S6] 1Zpresso 精製方法ガイド（ウォッシュド/ナチュラル/ハニー/アナエロビック） https://1zpresso.coffee/the-guide-to-coffee-processing-methods/
 //  [S7] Seattle Coffee Gear「Wet-Hulled (Giling Basah) Coffee Processing」 https://www.seattlecoffeegear.com/blogs/learning-center/wet-hulled-coffee-processing
 //  [S8] Achilles Coffee Roasters「How Roast Profiles Influence Coffee Flavor」 https://achillescoffeeroasters.com/blogs/specialty-coffee-blog/how-roast-profiles-influence-coffee-flavor-light-vs-medium-vs-dark
@@ -34,9 +34,9 @@ export const ORIGIN_KB = {
   },
   "ケニア": {
     commonProcess: ["ウォッシュド"],
-    flavors: ["ベリー", "柑橘", "完熟果実"],
+    flavors: ["ベリー", "柑橘", "ワイン"],
     acidity: "高め", body: "中",
-    note: "ジューシーで力強い酸。カシス（ブラックカラント）やグレープフルーツにたとえられることが多い",
+    note: "ジューシーで力強い酸。カシス（ブラックカラント）やグレープフルーツ、ワインのようと表されることが多い",
     sources: ["S3", "S9"],
   },
   "ルワンダ": {
@@ -123,7 +123,7 @@ export const PROCESS_KB = {
   "ウォッシュド": { flavors: ["柑橘", "紅茶", "花"], note: "クリーンで明るく、酸の輪郭がはっきりする", sources: ["S6"] },
   "ナチュラル": { flavors: ["ベリー", "完熟果実", "黒糖"], note: "果実の甘さとボディが出やすい", sources: ["S6", "S3"] },
   "ハニー": { flavors: ["キャラメル", "黒糖", "完熟果実"], note: "ウォッシュドの明るさとナチュラルの甘さの中間。シロップのような甘さ", sources: ["S6"] },
-  "アナエロビック": { flavors: ["トロピカル", "完熟果実", "スパイス"], note: "発酵由来の強い果実感や個性的な香り。好みが分かれやすい", sources: ["S6"] },
+  "アナエロビック": { flavors: ["トロピカル", "ワイン", "発酵感"], note: "発酵由来の強い果実感や、お酒・ワインのような個性的な香り。好みが分かれやすい", sources: ["S6"] },
   "スマトラ式": { flavors: ["土っぽい", "ハーブ", "スパイス"], note: "土やハーブのような風味、酸味は低くボディが重い", sources: ["S7"] },
 };
 
