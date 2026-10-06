@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useContext, createContext } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useContext, createContext } from "react";
 import { supabase } from "./supabaseClient";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -2359,31 +2359,27 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
       ))}
 
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー{req}</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-        {Object.keys(FLAVOR_TREE).map(b => (
-          <Chip key={b} active={draft.flavorBig === b} onClick={() => setDraft({ ...draft, flavorBig: b, flavorSmall: "", flavorDetail: "" })}>{b}</Chip>
-        ))}
-      </div>
-      {draft.flavorBig && (
-        <div className="cd-fade" style={{ borderLeft: "2px solid var(--line)", paddingLeft: 10, marginBottom: 10 }}>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {(FLAVOR_TREE[draft.flavorBig] || []).map(s => (
-              <Chip key={s} small active={draft.flavorSmall === s} onClick={() => setDraft({ ...draft, flavorSmall: s, flavorDetail: "" })}>{s}</Chip>
-            ))}
-          </div>
-          {!draft.flavorSmall && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>もう一段、近いものを選んでください</div>}
-          {draft.flavorSmall && FLAVOR_DETAIL[draft.flavorSmall] && (
-            <div className="cd-fade" style={{ borderLeft: "2px solid var(--line)", paddingLeft: 10, marginTop: 10 }}>
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もっと詳しく（任意）</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {FLAVOR_DETAIL[draft.flavorSmall].map(d => (
-                  <Chip key={d} small active={draft.flavorDetail === d} onClick={() => setDraft({ ...draft, flavorDetail: draft.flavorDetail === d ? "" : d })}>{d}</Chip>
-                ))}
-              </div>
+      <div style={{ marginBottom: 10 }}>
+        <ChipRowsWithPanel items={Object.keys(FLAVOR_TREE)} selected={draft.flavorBig}
+          onPick={bg => setDraft({ ...draft, flavorBig: bg, flavorSmall: "", flavorDetail: "" })}
+          panel={
+            <div className="cd-fade" style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px" }}>
+              <ChipRowsWithPanel small items={FLAVOR_TREE[draft.flavorBig] || []} selected={draft.flavorSmall}
+                onPick={sm => setDraft({ ...draft, flavorSmall: sm, flavorDetail: "" })}
+                panel={FLAVOR_DETAIL[draft.flavorSmall] && (
+                  <div className="cd-fade" style={{ background: "var(--cream)", borderRadius: 10, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もっと詳しく（任意）</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {FLAVOR_DETAIL[draft.flavorSmall].map(d => (
+                        <Chip key={d} small active={draft.flavorDetail === d} onClick={() => setDraft({ ...draft, flavorDetail: draft.flavorDetail === d ? "" : d })}>{d}</Chip>
+                      ))}
+                    </div>
+                  </div>
+                )} />
+              {!draft.flavorSmall && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>もう一段、近いものを選んでください</div>}
             </div>
-          )}
-        </div>
-      )}
+          } />
+      </div>
       {draft.flavorSmall && <div style={{ fontSize: 12, color: "var(--mocha)", marginBottom: 6 }}>選択中：<b>{flavorPath(draft)}</b></div>}
 
       <Field label="メモ（気づいたこと）"><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginTop: 8 }} value={draft.memo} onChange={e => setDraft({ ...draft, memo: e.target.value })} placeholder="例：後味に少し渋みが残った" /></Field>
@@ -2403,6 +2399,38 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
 
 function Chip({ children, active, onClick, small }) {
   return <button onClick={onClick} style={{ padding: small ? "7px 13px" : "9px 15px", borderRadius: 20, border: "1.5px solid", borderColor: active ? "var(--terra)" : "var(--line)", background: active ? "var(--terra)" : "var(--paper)", color: active ? "#fff" : "var(--mocha)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{children}</button>;
+}
+// 選んだチップと「同じ行の直下」に次の段階（panel）を差し込んで表示するチップ列。
+// 折り返し位置は画面幅で変わるので、描画後にチップの位置を測って差し込む場所を決める
+function ChipRowsWithPanel({ items, selected, onPick, small, panel }) {
+  const ref = useRef(null);
+  const [after, setAfter] = useState(-1); // この番号のチップの後ろに差し込む
+  const sel = items.indexOf(selected);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = ref.current;
+      if (!el || sel < 0) { setAfter(-1); return; }
+      const chips = [...el.children].filter(c => c.dataset.chip !== undefined);
+      const top = chips[sel]?.offsetTop;
+      let last = sel;
+      chips.forEach((c, i) => { if (c.offsetTop === top) last = Math.max(last, i); });
+      setAfter(last);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [sel, items.length]);
+  const at = sel < 0 || !panel ? -1 : after >= 0 ? after : items.length - 1;
+  return (
+    <div ref={ref} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {items.map((it, i) => (
+        <React.Fragment key={it}>
+          <span data-chip="" style={{ display: "inline-flex" }}><Chip small={small} active={selected === it} onClick={() => onPick(it)}>{it}</Chip></span>
+          {i === at && <div style={{ flexBasis: "100%" }}>{panel}</div>}
+        </React.Fragment>
+      ))}
+    </div>
+  );
 }
 function StepDots({ n }) {
   return <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>{[1, 2, 3].map(i => <div key={i} style={{ height: 4, flex: 1, borderRadius: 4, background: i <= n ? "var(--terra)" : "var(--line)" }} />)}</div>;
