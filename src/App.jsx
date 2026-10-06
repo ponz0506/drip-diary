@@ -46,6 +46,30 @@ const FLAVOR_TREE = {
   "ハーブ・植物": ["ハーブ", "青草"],
   "ロースト": ["トースト・穀物", "タバコ", "焦げ・燻製", "土っぽい"],
 };
+// さらに細かい香り（任意）。フレーバーホイールの一番外側の言葉を基にしている。
+// 好みの集計は中分類（FLAVOR_TREE の各語）で行い、ここは記録の補足として残す
+const FLAVOR_DETAIL = {
+  "柑橘": ["レモン", "オレンジ", "グレープフルーツ", "ライム"],
+  "ベリー": ["ブルーベリー", "ラズベリー", "ストロベリー", "ブラックベリー", "カシス"],
+  "ブドウ": ["赤ブドウ", "白ブドウ", "マスカット"],
+  "リンゴ・洋梨": ["青リンゴ", "赤リンゴ", "洋梨"],
+  "桃・杏": ["桃", "杏", "チェリー", "プラム"],
+  "トロピカル": ["パイナップル", "マンゴー", "パッションフルーツ", "ココナッツ"],
+  "ドライフルーツ": ["レーズン", "プルーン", "ドライイチジク"],
+  "花": ["ローズ", "カモミール", "ハイビスカス"],
+  "紅茶": ["ダージリン", "アールグレイ"],
+  "黒糖": ["モラセス（糖蜜）"],
+  "ナッツ": ["ピーナッツ", "ヘーゼルナッツ", "くるみ"],
+  "ダークチョコ": ["カカオ"],
+  "スパイス": ["アニス", "ナツメグ"],
+  "ワイン": ["赤ワイン", "白ワイン"],
+  "ラム・洋酒": ["ラム", "ウイスキー"],
+  "ハーブ": ["ミント", "セージ"],
+  "トースト・穀物": ["トースト", "麦芽"],
+  "土っぽい": ["杉・木"],
+};
+// 記録の香りを「大分類 → 中分類 → 小分類」の文字列に
+const flavorPath = (l, sep = " → ") => [flavorBigOf(l.flavorSmall) || l.flavorBig, l.flavorSmall, l.flavorDetail].filter(Boolean).join(sep);
 // 香り（小分類）から、今の大分類を引く（以前の大分類名「フルーツ系」などで保存された記録の表示・編集用）
 const flavorBigOf = (small) => Object.keys(FLAVOR_TREE).find(b => FLAVOR_TREE[b].includes(small)) || "";
 const TASTE_AXES = ["酸味", "苦味", "甘味", "コク", "濃度感", "雑味"];
@@ -455,7 +479,7 @@ export default function App() {
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
       grind: preset?.grind || 20, flowRate: preset?.flowRate || 4, pourUnit: preset?.pourUnit || "g", rateMode: preset?.rateMode || "all", pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
       taste: editId ? (preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 }) : { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
-      flavorBig: editId ? (flavorBigOf(preset?.flavorSmall) || preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
+      flavorBig: editId ? (flavorBigOf(preset?.flavorSmall) || preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", flavorDetail: editId ? (preset?.flavorDetail || "") : "", memo: editId ? (preset?.memo || "") : "",
       satisfaction: editId ? (preset?.satisfaction || 3) : 3, createdAt: editId ? (preset?.createdAt || Date.now()) : Date.now(),
       chat: editId ? (preset?.chat || []) : [], nextRecipe: editId ? (preset?.nextRecipe || null) : null,
     });
@@ -1495,7 +1519,7 @@ function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit, onRequ
             <span style={{ fontSize: 12, color: "var(--mocha)", width: 14 }}>{l.taste[ax]}</span>
           </div>
         ))}
-        {(l.flavorBig || l.flavorSmall) && <div style={{ fontSize: 13, color: "var(--mocha)", marginTop: 10 }}>フレーバー：{[flavorBigOf(l.flavorSmall) || l.flavorBig, l.flavorSmall].filter(Boolean).join(" → ")}</div>}
+        {(l.flavorBig || l.flavorSmall) && <div style={{ fontSize: 13, color: "var(--mocha)", marginTop: 10 }}>フレーバー：{flavorPath(l)}</div>}
         {l.memo && <div style={{ fontSize: 13, color: "var(--bean)", marginTop: 8, fontStyle: "italic", background: "var(--cream)", padding: "8px 12px", borderRadius: 10 }}>“{l.memo}”</div>}
       </Section>
 
@@ -2337,17 +2361,30 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー{req}</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
         {Object.keys(FLAVOR_TREE).map(b => (
-          <Chip key={b} active={draft.flavorBig === b} onClick={() => setDraft({ ...draft, flavorBig: b, flavorSmall: "" })}>{b}</Chip>
+          <Chip key={b} active={draft.flavorBig === b} onClick={() => setDraft({ ...draft, flavorBig: b, flavorSmall: "", flavorDetail: "" })}>{b}</Chip>
         ))}
       </div>
       {draft.flavorBig && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }} className="cd-fade">
-          {(FLAVOR_TREE[draft.flavorBig] || []).map(s => (
-            <Chip key={s} small active={draft.flavorSmall === s} onClick={() => setDraft({ ...draft, flavorSmall: s })}>{s}</Chip>
-          ))}
+        <div className="cd-fade" style={{ borderLeft: "2px solid var(--line)", paddingLeft: 10, marginBottom: 10 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {(FLAVOR_TREE[draft.flavorBig] || []).map(s => (
+              <Chip key={s} small active={draft.flavorSmall === s} onClick={() => setDraft({ ...draft, flavorSmall: s, flavorDetail: "" })}>{s}</Chip>
+            ))}
+          </div>
+          {!draft.flavorSmall && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>もう一段、近いものを選んでください</div>}
+          {draft.flavorSmall && FLAVOR_DETAIL[draft.flavorSmall] && (
+            <div className="cd-fade" style={{ borderLeft: "2px solid var(--line)", paddingLeft: 10, marginTop: 10 }}>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もっと詳しく（任意）</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {FLAVOR_DETAIL[draft.flavorSmall].map(d => (
+                  <Chip key={d} small active={draft.flavorDetail === d} onClick={() => setDraft({ ...draft, flavorDetail: draft.flavorDetail === d ? "" : d })}>{d}</Chip>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
-      {draft.flavorBig && !draft.flavorSmall && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もう一段、近いものを選んでください</div>}
+      {draft.flavorSmall && <div style={{ fontSize: 12, color: "var(--mocha)", marginBottom: 6 }}>選択中：<b>{flavorPath(draft)}</b></div>}
 
       <Field label="メモ（気づいたこと）"><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginTop: 8 }} value={draft.memo} onChange={e => setDraft({ ...draft, memo: e.target.value })} placeholder="例：後味に少し渋みが残った" /></Field>
 
@@ -2396,7 +2433,7 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
 ドリッパー: ${dripper?.name || draft.dripperName || "不明"}${dripper?.type ? `（${dripper.type}）` : ""}
 注ぎ: ${pourStr}
 味の評価(1-5): ${TASTE_AXES.map(a => `${a}${t[a]}`).join(" ")}
-フレーバー: ${[draft.flavorBig, draft.flavorSmall].filter(Boolean).join("→") || "未選択"}
+フレーバー: ${flavorPath(draft, "→") || "未選択"}
 総合満足度: ${draft.satisfaction}/5
 メモ: ${draft.memo || "なし"}`;
   };
