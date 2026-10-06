@@ -616,11 +616,150 @@ function LogCard({ log: l, bean, onClick, trialNo, showBeanNo }) {
   );
 }
 
+// ====== 記録からの復元 ======
+// 豆・ミル・ドリッパーのデータが失われても、記録には各IDとAI診断の履歴（味わいメモ）が残っている。
+// 同じIDで作り直せば記録とのひもづけが元に戻り、名前などは味わいメモから読み取れる。
+const PROCESS_HINT = /wash|ウォッシュ|水洗|natural|ナチュラル|honey|ハニー|パルプド|anaerob|アナエロ|嫌気|スマトラ|精製|発酵/i;
+const parseBrewSheet = (text) => {
+  const line = (label) => ((text || "").match(new RegExp(`^${label}: (.*)$`, "m")) || [])[1]?.trim();
+  const out = {};
+  const bl = line("豆");
+  if (bl) {
+    const m = bl.match(/^(.*?)（(.*)）$/);
+    const name = (m ? m[1] : bl).trim();
+    if (name && name !== "不明") {
+      const parts = (m ? m[2] : "").split(" / ").map(s => s.trim()).filter(Boolean);
+      const roastLevel = parts.find(p => ROAST_LEVELS.includes(p)) || "";
+      const process = parts.find(p => p !== roastLevel && PROCESS_HINT.test(p)) || "";
+      const origin = parts.filter(p => p !== roastLevel && p !== process).join(" / ");
+      const rn = line("ロースター評");
+      out.bean = { name, origin, process, roastLevel, roasterNote: rn && rn !== "なし" ? rn : "" };
+    }
+  }
+  const gl = line("粒度");
+  if (gl) { const m = gl.match(/^(.*) [\d.]+クリック$/); const n = (m ? m[1] : "").trim(); if (n && n !== "不明") out.grinder = { name: n }; }
+  const dl = line("ドリッパー");
+  if (dl) { const m = dl.match(/^(.*?)(?:（(.*)）)?$/); const n = (m?.[1] || "").trim(); if (n && n !== "不明") out.dripper = { name: n, type: m?.[2] || "" }; }
+  return out;
+};
+// 記録から「見つからないID」を集め、復元候補を作る
+function findRestorable(logs, beans, grinders, drippers) {
+  const kinds = [
+    { kind: "bean", idKey: "beanId", list: beans },
+    { kind: "grinder", idKey: "grinderId", list: grinders },
+    { kind: "dripper", idKey: "dripperId", list: drippers },
+  ];
+  const sorted = [...(logs || [])].sort((a, b) => b.createdAt - a.createdAt); // 新しい記録の情報を優先
+  return kinds.map(({ kind, idKey, list }) => {
+    const known = new Set((list || []).map(x => x.id));
+    const found = {};
+    sorted.forEach(l => {
+      const id = l[idKey];
+      if (!id || known.has(id)) return;
+      const f = found[id] || (found[id] = { id, kind, cups: 0, first: l.createdAt, info: null });
+      f.cups++; f.first = Math.min(f.first, l.createdAt);
+      if (!f.info) {
+        const sheet = (l.chat || []).find(m => m.role === "user" && /【今回の味わいメモ】/.test(m.content || ""));
+        const parsed = sheet ? parseBrewSheet(sheet.content)[kind] : null;
+        if (parsed) f.info = parsed;
+      }
+    });
+    return Object.values(found);
+  });
+}
+// 初期サンプル（読み込みの不具合で上書きされたもの）を見分ける
+const isSampleItem = (kind, x) =>
+  kind === "bean" ? x.name === SEED_BEAN.name && x.shop === SEED_BEAN.shop && x.roasterNote === SEED_BEAN.roasterNote
+  : kind === "grinder" ? x.name === SEED_GRINDER.name && x.type === SEED_GRINDER.type && !x.note
+  : x.name === SEED_DRIPPER.name && x.type === SEED_DRIPPER.type && !x.note;
+
+function RestoreModal({ logs, beans, saveBeans, grinders, saveGrinders, drippers, saveDrippers, favorites, onClose }) {
+  const notify = useContext(ToastCtx);
+  const [bc, gc, dc] = findRestorable(logs, beans, grinders, drippers);
+  const all = [...bc, ...gc, ...dc];
+  const fallbackName = (c) => `名前不明の${c.kind === "bean" ? "豆" : c.kind === "grinder" ? "ミル" : "ドリッパー"}（${c.cups}杯・${new Date(c.first).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}〜）`;
+  const [names, setNames] = useState(() => Object.fromEntries(all.map(c => [c.id, c.info?.name || ""])));
+  // 記録・定番レシピで使われていない初期サンプルは、削除を選べるようにする
+  const usedIds = new Set([...(logs || []), ...(favorites || [])].flatMap(x => [x.beanId, x.grinderId, x.dripperId]).filter(Boolean));
+  // 上書きの形跡（見つからないID）がある種類だけを対象にする（本当に持っている同名の器具を消さないため）
+  const samples = [["bean", beans, bc], ["grinder", grinders, gc], ["dripper", drippers, dc]].filter(([, , c]) => c.length).flatMap(([kind, list]) => (list || []).filter(x => isSampleItem(kind, x) && !usedIds.has(x.id)).map(x => ({ kind, item: x })));
+  const [dropSample, setDropSample] = useState(() => Object.fromEntries(samples.map(s => [s.item.id, true])));
+
+  const run = () => {
+    const nameOf = (c) => (names[c.id] || "").trim() || fallbackName(c);
+    const keep = (list) => (list || []).filter(x => !dropSample[x.id]);
+    if (bc.length || samples.some(s => s.kind === "bean")) saveBeans([
+      ...bc.map(c => ({ id: c.id, name: nameOf(c), origin: c.info?.origin || "", variety: "", process: c.info?.process || "", roastDate: "", roastLevel: c.info?.roastLevel || "中煎り", shop: "", roasterNote: c.info?.roasterNote || "", createdAt: c.first, restoredAt: Date.now() })),
+      ...keep(beans),
+    ]);
+    if (gc.length || samples.some(s => s.kind === "grinder")) saveGrinders([...gc.map(c => ({ id: c.id, name: nameOf(c), type: "", note: "", createdAt: c.first, restoredAt: Date.now() })), ...keep(grinders)]);
+    if (dc.length || samples.some(s => s.kind === "dripper")) saveDrippers([...dc.map(c => ({ id: c.id, name: nameOf(c), type: c.info?.type || "", note: "", createdAt: c.first, restoredAt: Date.now() })), ...keep(drippers)]);
+    notify(`${all.length}件を復元しました`);
+    onClose();
+  };
+
+  // 入力欄のフォーカスが外れないよう、コンポーネントではなく関数で描画する
+  const section = (title, items) => items.length > 0 && (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 8 }}>{title}（{items.length}）</div>
+      {items.map(c => (
+        <div key={c.id} style={{ background: "var(--paper)", borderRadius: 12, padding: "10px 12px", marginBottom: 8 }}>
+          <input style={{ ...inputStyle, padding: "8px 10px", fontSize: 14 }} value={names[c.id]} placeholder={fallbackName(c)}
+            onChange={e => setNames(n => ({ ...n, [c.id]: e.target.value }))} />
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6, lineHeight: 1.6 }}>
+            {c.kind === "bean" && c.info && [c.info.origin, c.info.process, c.info.roastLevel].filter(Boolean).join(" · ")}
+            {c.kind === "dripper" && c.info?.type}
+            {c.info ? "" : "AI診断の履歴がないため、名前を入力してください"}
+            <span style={{ marginLeft: 6 }}>· 記録 {c.cups}杯</span>
+          </div>
+          {c.kind === "bean" && c.info?.roasterNote && <div style={{ fontSize: 11.5, color: "var(--mocha)", fontStyle: "italic", marginTop: 4 }}>“{c.info.roasterNote}”</div>}
+        </div>
+      ))}
+    </div>
+  );
+
+  return (
+    <ModalShell title="記録から復元" onClose={onClose}>
+      <div style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 14 }}>
+        記録にひもづいているのに見つからない豆・器具を、同じIDで作り直します。名前などはAI診断の履歴から読み取りました。必要なら名前を直してから復元してください。
+      </div>
+      {section("豆", bc)}
+      {section("ミル", gc)}
+      {section("ドリッパー", dc)}
+      {samples.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 8 }}>使われていない初期サンプル</div>
+          {samples.map(s => (
+            <label key={s.item.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "4px 2px", cursor: "pointer" }}>
+              <input type="checkbox" checked={!!dropSample[s.item.id]} onChange={e => setDropSample(d => ({ ...d, [s.item.id]: e.target.checked }))} />
+              「{s.item.name}」を削除する
+            </label>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>アーカイブの状態や「また買いたい？」の回答は戻りません。復元後にカルテで編集できます。</div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Btn kind="ghost" onClick={onClose} style={{ flex: 1 }}>キャンセル</Btn>
+        <Btn onClick={run} disabled={!all.length} style={{ flex: 2 }}>{all.length}件を復元する</Btn>
+      </div>
+    </ModalShell>
+  );
+}
+
 // ====== カルテ（豆 / ミル / ドリッパー / レシピ 切替）======
 function Karte({ beans, saveBeans, logs, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, startRecord }) {
   const [tab, setTab] = useState("bean");
+  const [restoring, setRestoring] = useState(false);
+  const missing = findRestorable(logs, beans, grinders, drippers).reduce((n, list) => n + list.length, 0);
   return (
     <div className="cd-fade">
+      {missing > 0 && (
+        <div style={{ background: "rgba(179,85,47,.08)", border: "1px solid rgba(179,85,47,.3)", borderRadius: 14, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ flex: 1, fontSize: 12.5, color: "var(--bean)", lineHeight: 1.6 }}>記録にひもづく豆・器具が <b>{missing}件</b> 見つかりません。記録から復元できます。</div>
+          <Btn onClick={() => setRestoring(true)} style={{ padding: "8px 14px", fontSize: 13, flexShrink: 0 }}>復元する</Btn>
+        </div>
+      )}
+      {restoring && <RestoreModal logs={logs} beans={beans} saveBeans={saveBeans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} onClose={() => setRestoring(false)} />}
       <div style={{ display: "flex", gap: 5, marginBottom: 18, background: "var(--paper)", padding: 5, borderRadius: 14 }}>
         {[["bean", "豆"], ["grinder", "ミル"], ["dripper", "ドリッパー"], ["recipe", "レシピ"]].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{ flex: 1, padding: "9px 2px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, whiteSpace: "nowrap", background: tab === k ? "var(--bean)" : "transparent", color: tab === k ? "var(--cream)" : "var(--mocha)" }}>{l}</button>
