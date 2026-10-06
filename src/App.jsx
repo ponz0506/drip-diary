@@ -89,6 +89,31 @@ const validateBackup = (obj) => {
   return null;
 };
 
+// 今のデータ（now）を別のデータ（then）に置き換えたら何が起きるかを、種類ごとに要約する
+// 消える＝今あって置き換え後に無い / 戻る＝今無くて置き換え後にある / 変わる＝両方にあるが内容が違う
+const summarizeRestore = (now, then) => {
+  const beanName = (id) => [...(now.cd_beans || []), ...(then.cd_beans || [])].find(b => b.id === id)?.name;
+  const logLabel = (l) => `${new Date(l.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} ${beanName(l.beanId) || l.beanName || "不明な豆"} ★${l.satisfaction ?? "-"}`;
+  const lists = [
+    { key: "cd_logs", label: "記録", name: logLabel },
+    { key: "cd_beans", label: "豆", name: x => x.name },
+    { key: "cd_favorites", label: "定番レシピ", name: x => x.name },
+    { key: "cd_grinders", label: "ミル", name: x => x.name },
+    { key: "cd_drippers", label: "ドリッパー", name: x => x.name },
+  ];
+  const rows = [], same = [];
+  lists.forEach(({ key, label, name }) => {
+    const a = now[key] || [], b = then[key] || [];
+    const am = new Map(a.map(x => [x.id, x])), bm = new Map(b.map(x => [x.id, x]));
+    const gone = a.filter(x => !bm.has(x.id)), back = b.filter(x => !am.has(x.id));
+    const changed = b.filter(x => am.has(x.id) && JSON.stringify(am.get(x.id)) !== JSON.stringify(x));
+    if (!gone.length && !back.length && !changed.length) { same.push(label); return; }
+    rows.push({ label, parts: [["消える", gone], ["戻る", back], ["内容が変わる", changed]].filter(([, xs]) => xs.length).map(([kind, xs]) => ({ kind, count: xs.length, names: xs.slice(0, 3).map(name), more: Math.max(0, xs.length - 3) })) });
+  });
+  const others = [["cd_proposed", "次の一杯の提案"], ["cd_profile", "プロフィール"]].filter(([k]) => JSON.stringify(now[k] ?? null) !== JSON.stringify(then[k] ?? null)).map(([, l]) => l);
+  return { rows, same, others, identical: !rows.length && !others.length };
+};
+
 // ====== サーバー側の変更履歴（user_data_history、DBのトリガーが自動で記録）======
 const KEY_LABELS = { cd_beans: "豆", cd_grinders: "ミル", cd_drippers: "ドリッパー", cd_favorites: "定番レシピ", cd_logs: "記録", cd_proposed: "次の一杯", cd_profile: "プロフィール" };
 const serverHistory = {
@@ -2828,16 +2853,39 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
       {mode === "restore" && pending && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>{pending.fromHistory ? "この時点に戻しますか？" : "このバックアップで復元しますか？"}</div>
-          <div style={{ background: "var(--paper)", borderRadius: 12, padding: "10px 14px", fontSize: 12.5, lineHeight: 1.9, marginBottom: 10 }}>
+          <div style={{ background: "var(--paper)", borderRadius: 12, padding: "8px 14px", fontSize: 12.5, lineHeight: 1.9, marginBottom: 12 }}>
             <div>{pending.fromHistory ? "時点" : "書き出した日時"}：<b>{fmtDate(pending.exportedAt)}</b>{pending.fromHistory ? " の直前" : ""}</div>
-            <div>記録 <b>{pending.data.cd_logs.length}</b>杯 · 豆 <b>{pending.data.cd_beans.length}</b>袋 · 定番レシピ <b>{pending.data.cd_favorites.length}</b>件</div>
-            <div>ミル {pending.data.cd_grinders.length}台 · ドリッパー {pending.data.cd_drippers.length}台</div>
           </div>
+          {(() => {
+            const sm = summarizeRestore(makeBackup().data, pending.data);
+            if (sm.identical) return <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>今のデータと同じ内容です。戻す必要はありません。</div>;
+            return (
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 6 }}>戻すと、こう変わります</div>
+                {sm.rows.map(r => (
+                  <div key={r.label} style={{ display: "grid", gridTemplateColumns: "64px 1fr", gap: 8, padding: "7px 0", borderBottom: "1px dotted var(--line)" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700 }}>{r.label}</span>
+                    <span>
+                      {r.parts.map(pt => (
+                        <div key={pt.kind} style={{ fontSize: 12, lineHeight: 1.7, marginBottom: 2 }}>
+                          <b style={{ color: pt.kind === "消える" ? "var(--danger)" : pt.kind === "戻る" ? "var(--terra)" : "var(--mocha)" }}>{pt.kind} {pt.count}件</b>
+                          {pt.names.map(n => <div key={n} style={{ color: "var(--bean)", paddingLeft: 8 }}>・{n}</div>)}
+                          {pt.more > 0 && <div style={{ color: "var(--muted)", paddingLeft: 8 }}>ほか {pt.more}件</div>}
+                        </div>
+                      ))}
+                    </span>
+                  </div>
+                ))}
+                {sm.others.length > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6 }}>{sm.others.join("・")}も、この時点の内容に戻ります。</div>}
+                {sm.same.length > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>変わらないもの：{sm.same.join("・")}</div>}
+              </div>
+            );
+          })()}
           <div style={{ fontSize: 12, color: "var(--terra)", lineHeight: 1.7, marginBottom: 12 }}>{pending.fromHistory ? "今のデータはすべて、この時点の内容に置き換わります。戻したあとも、同じ画面から今の状態に戻せます。" : "今のデータはすべて、このバックアップの内容に置き換わります。念のため、置き換える前に今のデータを自動で書き出します。"}</div>
           {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
           <div style={{ display: "flex", gap: 10 }}>
             <Btn kind="ghost" onClick={() => { const back = pending.fromHistory; setPending(null); setRestoreMsg(""); if (back) setMode("history"); else setMode(null); }} style={{ flex: 1 }}>キャンセル</Btn>
-            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "復元中…" : "復元する"}</Btn>
+            <Btn disabled={busy || summarizeRestore(makeBackup().data, pending.data).identical} onClick={doRestore} style={{ flex: 2 }}>{busy ? "復元中…" : pending.fromHistory ? "この時点に戻す" : "復元する"}</Btn>
           </div>
         </div>
       )}
