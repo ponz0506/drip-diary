@@ -1241,22 +1241,6 @@ async function requestBeanSuggestion(prof) {
   return { id: uid(), createdAt: Date.now(), summary: String(r.summary || "").trim(), items, basis: { cups: prof.cupCount, beans: prof.beanCount } };
 }
 
-// 通販やお店で探すときのキーワード。タップでコピーできる
-function SearchKeyword({ text }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* コピーできない環境では何もしない */ }
-  };
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-      <span style={{ fontSize: 11, color: "var(--muted)" }}>探すときのキーワード</span>
-      <button onClick={copy} style={{ fontSize: 12, color: "var(--mocha)", background: "var(--paper)", border: "1px dashed var(--line)", borderRadius: 8, padding: "3px 9px", cursor: "pointer", fontFamily: "inherit" }}>
-        {text}<span style={{ marginLeft: 6, fontSize: 10.5, color: "var(--muted)" }}>{copied ? "コピーしました" : "コピー"}</span>
-      </button>
-    </div>
-  );
-}
-
 function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
   const notify = useContext(ToastCtx);
   const [loading, setLoading] = useState(false);
@@ -1291,18 +1275,19 @@ function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: SUGGEST_TYPES[it.type] === "好みに近い" ? "var(--terra)" : "var(--mocha)", borderRadius: 10, padding: "2px 9px", flexShrink: 0 }}>{SUGGEST_TYPES[it.type] || it.type}</span>
                 <span className="cd-serif" style={{ fontSize: 14.5, fontWeight: 700, color: "var(--espresso)" }}>{[it.origin, it.process, it.roastLevel].filter(Boolean).join(" · ")}</span>
               </div>
-              {it.flavors.length > 0 && (
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
+              {/* 表からの事実（香り・酸味・ボディ）は短いタグで。文章はAIの「おすすめの理由」だけ */}
+              {(it.flavors.length > 0 || (it.kb && ORIGIN_KB[it.origin])) && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
                   {it.flavors.map(f => <span key={f} style={{ fontSize: 11.5, fontWeight: 700, color: "var(--terra)", background: "var(--paper)", border: "1px solid rgba(179,85,47,.3)", borderRadius: 20, padding: "1px 9px" }}>{f}</span>)}
+                  {it.kb && ORIGIN_KB[it.origin] && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 4 }}>酸味 {ORIGIN_KB[it.origin].acidity} · ボディ {ORIGIN_KB[it.origin].body}</span>}
                 </div>
               )}
-              {it.kb && ORIGIN_KB[it.origin] && (
-                <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 4 }}>
-                  {ORIGIN_KB[it.origin].note}（酸味 {ORIGIN_KB[it.origin].acidity}・ボディ {ORIGIN_KB[it.origin].body}）
-                </div>
+              {it.reason && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginBottom: 2 }}>おすすめの理由</div>
+                  <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.7 }}>{it.reason}</div>
+                </>
               )}
-              {it.reason && <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.7 }}>{it.reason}</div>}
-              {it.kb && <SearchKeyword text={[it.origin, it.process, it.roastLevel].filter(Boolean).join(" ")} />}
             </div>
           ))}
           <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>{latest.items.some(x => x.kb)
