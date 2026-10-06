@@ -1807,10 +1807,10 @@ function Rec1({ draft, setDraft, beans, saveBeans, setScreen, editing, onSaveDir
       )}
 
       {editing ? (
-        // 日記の編集：どのページでも「次へ」（枠線）が上、「変更を保存」（メイン色）が一番下
+        // 日記の編集：「次へ」（メイン色）が上、「変更を保存」（枠線）が一番下。新規記録の流れと同じ見た目にそろえる
         <>
-          <Btn kind="ghost" disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
-          <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>変更を保存</Btn>
+          <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+          <Btn kind="ghost" disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>変更を保存</Btn>
         </>
       ) : (
         <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
@@ -2318,8 +2318,8 @@ function Rec2({ editing, onSaveDirect, draft, setDraft, beans, grinders, saveGri
 
       {editing ? (
         <>
-          <Btn kind="ghost" style={{ width: "100%", marginBottom: 10 }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
-          <Btn style={{ width: "100%" }} onClick={onSaveDirect}>変更を保存</Btn>
+          <Btn style={{ width: "100%", marginBottom: 10 }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+          <Btn kind="ghost" style={{ width: "100%" }} onClick={onSaveDirect}>変更を保存</Btn>
         </>
       ) : (
         <>
