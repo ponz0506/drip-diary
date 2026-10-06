@@ -141,10 +141,11 @@ const serverHistory = {
     // 主な変更があるときは「次の一杯の提案を更新」などの付随的な変更は表示しない
     return groups.map(g => {
       const major = g.items.filter(x => !x.minor);
-      return { at: g.at, items: major.length ? major : g.items };
+      const items = (major.length ? major : g.items).filter((x, i, arr) => arr.findIndex(y => y.text === x.text && y.sub === x.sub) === i);
+      return { at: g.at, items };
     }).filter(g => g.items.length);
   },
-  // 時点 at の「直前」の全データ。各キーについて at 以降で最初の履歴（＝その変更の前の値）、無ければ現在の値
+  // 時点 at の「直前」の全データ（＝1つ前の変更の「直後」の状態）。各キーについて at 以降で最初の履歴（＝その変更の前の値）、無ければ現在の値
   async stateBefore(at, current) {
     const iso = new Date(at).toISOString();
     const out = {};
@@ -2709,12 +2710,14 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
     try { setChanges(await serverHistory.changes(makeBackup().data)); }
     catch { setChanges([]); setRestoreMsg("変更履歴を読み込めませんでした。サーバー側の設定が済んでいないか、通信に失敗しています。"); }
   };
-  // 選んだ変更より前に戻す：その変更以降の変更（＝取り消されるもの）を確認画面に出す
-  const pickChange = async (g) => {
+  // 選んだ変更の「直後」の状態に戻す（一般的な版の履歴と同じ）。
+  // i は changes（新しい順）の位置。i = changes.length は「一番古い変更より前の状態」
+  // 変更 i の直後の状態 ＝ 1つ新しい変更 i-1 の直前の状態。取り消されるのは i より新しい変更
+  const pickVersion = async (i) => {
     setBusy(true); setRestoreMsg("");
     try {
-      const data = await serverHistory.stateBefore(g.at, makeBackup().data);
-      setPending({ app: "drip-diary", version: 1, data, fromHistory: true, at: g.at, undone: changes.filter(x => x.at >= g.at) });
+      const data = await serverHistory.stateBefore(changes[i - 1].at, makeBackup().data);
+      setPending({ app: "drip-diary", version: 1, data, fromHistory: true, at: i < changes.length ? changes[i].at : null, undone: changes.slice(0, i) });
       setMode("restore");
     } catch { setRestoreMsg("この時点のデータを読み込めませんでした。"); }
     setBusy(false);
@@ -2799,7 +2802,7 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
 
   return (
     <ModalShell title="設定" onClose={onClose}>
-      <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "2px 0 4px", letterSpacing: ".04em" }}>アカウント</div>
+      {(mode === null || mode === "email" || mode === "pw") && <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "2px 0 4px", letterSpacing: ".04em" }}>アカウント</div>}
 
       {mode === null && (
         <>
@@ -2851,15 +2854,24 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
       {mode === "history" && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>変更履歴</div>
-          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>選んだ変更より前の状態に戻せます。</div>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>選んだ時点の状態に戻せます。</div>
           {changes === null && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>読み込み中…</div>}
           {changes && changes.length === 0 && !restoreMsg && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>まだ変更履歴はありません。</div>}
-          {changes && changes.slice(0, 60).map(g => (
-            <button key={g.at} disabled={busy} onClick={() => pickChange(g)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy ? "default" : "pointer", fontFamily: "inherit", display: "flex", gap: 12 }}>
-              <span style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, width: 72, paddingTop: 1 }}>{fmtShort(g.at)}</span>
+          {changes && changes.slice(0, 60).map((g, i) => (
+            <button key={g.at} disabled={busy || i === 0} onClick={() => pickVersion(i)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: i === 0 ? "1.5px solid var(--terra)" : "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy || i === 0 ? "default" : "pointer", fontFamily: "inherit", display: "flex", gap: 12 }}>
+              <span style={{ flexShrink: 0, width: 72, paddingTop: 1 }}>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtShort(g.at)}</span>
+                {i === 0 && <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "var(--terra)", borderRadius: 10, padding: "1px 8px" }}>現在</span>}
+              </span>
               <ChangeLines items={g.items} />
             </button>
           ))}
+          {changes && changes.length > 0 && changes.length <= 60 && (
+            <button disabled={busy} onClick={() => pickVersion(changes.length)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy ? "default" : "pointer", fontFamily: "inherit", display: "flex", gap: 12 }}>
+              <span style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, width: 72 }}>それ以前</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--espresso)" }}>最も古いバックアップ</span>
+            </button>
+          )}
           {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", margin: "8px 0", lineHeight: 1.7 }}>{restoreMsg}</div>}
           <Btn kind="ghost" onClick={() => { setMode(null); setRestoreMsg(""); }} style={{ width: "100%", marginTop: 8 }}>戻る</Btn>
         </div>
@@ -2867,8 +2879,8 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
 
       {mode === "restore" && pending && pending.fromHistory && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>{fmtShort(pending.at)} より前に戻しますか？</div>
-          <div style={{ fontSize: 12.5, color: "var(--mocha)", marginBottom: 6 }}>次の変更が取り消されます（{pending.undone.length}件）</div>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>{pending.at ? `${fmtShort(pending.at)} の状態に戻しますか？` : "最も古いバックアップの状態に戻しますか？"}</div>
+          <div style={{ fontSize: 12.5, color: "var(--mocha)", marginBottom: 6 }}>これより後の変更（{pending.undone.length}件）が取り消されます。</div>
           <div style={{ background: "var(--paper)", borderRadius: 12, padding: "6px 14px", marginBottom: 10 }}>
             {pending.undone.slice(0, 5).map(g => (
               <div key={g.at} style={{ display: "flex", gap: 12, padding: "6px 0", borderBottom: "1px dotted var(--line)" }}>
