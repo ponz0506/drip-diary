@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useContext, createContext } from "react";
 import { supabase } from "./supabaseClient";
+import { ORIGIN_KB, PROCESS_KB, ROAST_KB, expectedFlavors } from "./coffeeKnowledge";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   RadarChart, Radar, PolarGrid, PolarAngleAxis, Legend,
@@ -1197,19 +1198,28 @@ const profileToPrompt = (prof) => {
 };
 // 提案の種類：match＝好みに近い / discover＝新しい発見（以前の保存データの「定番」「冒険」も同じ扱い）
 const SUGGEST_TYPES = { match: "好みに近い", discover: "新しい発見", 定番: "好みに近い", 冒険: "新しい発見" };
-const SUGGEST_SYSTEM =
-  "あなたはスペシャルティコーヒー豆の買い付けと販売に詳しいバリスタです。利用者の好みの記録をもとに、次に買って試す豆の「タイプ」を2つ提案します。\n" +
-  "・1つ目は「好みに近い」豆：今の好みの延長で、満足する可能性が高いもの。\n" +
-  "・2つ目は「新しい発見」の豆：好みと共通する要素を1つ以上残しつつ、まだ試していない産地・精製・焙煎度のどれかに踏み出すもの。\n" +
-  "・特定の商品名や店名は出さない。産地（国、必要なら地域）・精製方法・焙煎度の組み合わせで答える。\n" +
-  "・焙煎度は「浅煎り」「中浅煎り」「中煎り」「中深煎り」「深煎り」のどれか。\n" +
-  "・苦手な香りや「もう買わない豆」の傾向は避ける。記録が少ない項目は決めつけず、一般的な知識で補う。\n" +
-  "前後の説明やマークダウンは付けず、次のJSONオブジェクトだけを返す:\n" +
-  '{"summary":"利用者の好みをひとことで（25字以内）","items":[{"type":"match","origin":"産地","process":"精製方法","roastLevel":"焙煎度","flavors":["期待できる香り（最大3つ）"],"reason":"好みのどこに合うか（50字以内）"},{"type":"discover", 同じ形 }]}';
+// AIへの指示：風味の表（coffeeKnowledge.js）の中からだけ選ばせる。
+// 香り・特徴はアプリが表から表示し、AIが書くのは「好みのどこに合うか」の理由だけ（もっともらしい誤りを防ぐ）
+const buildSuggestSystem = () => {
+  const origins = Object.entries(ORIGIN_KB).map(([k, o]) =>
+    `- ${k}（主な精製: ${o.commonProcess.join("/")}）香り: ${o.flavors.join("・")}${o.flavorsByProcess ? `（${Object.entries(o.flavorsByProcess).map(([p, f]) => `${p}は${f.join("・")}`).join("、")}）` : ""}／酸味 ${o.acidity}・ボディ ${o.body}`).join("\n");
+  const processes = Object.entries(PROCESS_KB).map(([k, x]) => `- ${k}: ${x.flavors.join("・")}。${x.note}`).join("\n");
+  const roasts = Object.entries(ROAST_KB).map(([k, x]) => `- ${k}: ${x.flavors.join("・")}。${x.note}`).join("\n");
+  return "あなたはスペシャルティコーヒー豆の買い付けと販売に詳しいバリスタです。利用者の好みの記録をもとに、次に買って試す豆の「タイプ」を2つ提案します。\n" +
+    "・1つ目は「好みに近い」豆：今の好みの延長で、満足する可能性が高いもの。\n" +
+    "・2つ目は「新しい発見」の豆：好みと共通する要素を1つ以上残しつつ、まだ試していない産地・精製・焙煎度のどれかに踏み出すもの。\n" +
+    "・産地・精製・焙煎度は、必ず下の【風味の傾向の表】に書かれた名前からそのまま選ぶ。表にないものは使わない。\n" +
+    "・精製は、なるべくその産地の「主な精製」から選ぶ（手に入りやすいため）。\n" +
+    "・理由には、表に書かれた傾向と利用者の記録だけを使う。表にない香りや、地域・農園の話は書かない。\n" +
+    "・苦手な香りや「もう買わない豆」の傾向は避ける。\n\n" +
+    `【風味の傾向の表】\n■産地\n${origins}\n■精製\n${processes}\n■焙煎度\n${roasts}\n\n` +
+    "前後の説明やマークダウンは付けず、次のJSONオブジェクトだけを返す:\n" +
+    '{"items":[{"type":"match","origin":"表の産地名","process":"表の精製名","roastLevel":"表の焙煎度","reason":"好みのどこに合うか（50字以内）"},{"type":"discover", 同じ形 }]}';
+};
 
 async function requestBeanSuggestion(prof) {
   const { data, error } = await supabase.functions.invoke("ai", {
-    body: { system: SUGGEST_SYSTEM, messages: [{ role: "user", content: `【好みの記録】\n${profileToPrompt(prof)}\n\n次に試す豆のタイプを2つ、JSONで。` }], maxTokens: 900, json: true, temperature: 0.7 },
+    body: { system: buildSuggestSystem(), messages: [{ role: "user", content: `【好みの記録】\n${profileToPrompt(prof)}\n\n次に試す豆のタイプを2つ、JSONで。` }], maxTokens: 900, json: true, temperature: 0.7 },
   });
   if (error) throw error;
   if (data?.error) throw new Error(data.error);
@@ -1217,16 +1227,18 @@ async function requestBeanSuggestion(prof) {
   const m = txt.match(/\{[\s\S]*\}/);
   if (m) txt = m[0];
   const r = JSON.parse(txt);
-  const items = (Array.isArray(r.items) ? r.items : []).slice(0, 2).map((x, i) => ({
-    type: i === 0 ? "match" : "discover",
-    origin: String(x.origin || "").trim(),
-    process: normalizeProcess(x.process),
-    roastLevel: ROAST_LEVELS.includes(x.roastLevel) ? x.roastLevel : "",
-    flavors: (Array.isArray(x.flavors) ? x.flavors : []).map(String).slice(0, 3),
-    reason: String(x.reason || "").trim(),
-  })).filter(x => x.origin || x.process || x.roastLevel);
+  // 表にある名前に合わせる（「エチオピア イルガチェフェ」→「エチオピア」など）。表にない産地の提案は捨てる
+  const toOrigin = (v) => { const t = String(v || "").trim(); return ORIGIN_KB[t] ? t : Object.keys(ORIGIN_KB).find(k => t.includes(k)) || ""; };
+  const items = (Array.isArray(r.items) ? r.items : []).slice(0, 2).map((x, i) => {
+    const origin = toOrigin(x.origin);
+    if (!origin) return null;
+    const pr = normalizeProcess(x.process);
+    const process = PROCESS_KB[pr] ? pr : ORIGIN_KB[origin].commonProcess[0];
+    const roastLevel = ROAST_KB[x.roastLevel] ? x.roastLevel : "";
+    return { type: i === 0 ? "match" : "discover", origin, process, roastLevel, flavors: expectedFlavors({ origin, process, roastLevel }), reason: String(x.reason || "").trim(), kb: true };
+  }).filter(Boolean);
   if (!items.length) throw new Error("提案を読み取れませんでした");
-  return { id: uid(), createdAt: Date.now(), summary: String(r.summary || "").trim(), items, basis: { cups: prof.cupCount, beans: prof.beanCount } };
+  return { id: uid(), createdAt: Date.now(), items, basis: { cups: prof.cupCount, beans: prof.beanCount } };
 }
 
 function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
@@ -1251,27 +1263,36 @@ function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
     <div style={card}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
         <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)" }}>次に試したい豆</div>
-        {latest && <div style={{ fontSize: 11, color: "var(--muted)" }}>{new Date(latest.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}の提案</div>}
+        {latest && <div style={{ fontSize: 11, color: "var(--muted)" }}>{new Date(latest.createdAt).toLocaleDateString("ja-JP")}の提案</div>}
       </div>
       {!latest && <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>あなたの好みから、次に買う豆のタイプ（産地・精製・焙煎度）をAIが提案します。</div>}
       {latest && (
         <>
-          {latest.summary && <div style={{ fontSize: 12.5, color: "var(--bean)", margin: "4px 0 12px" }}>{latest.summary}</div>}
+          <div style={{ height: 8 }} />
           {latest.items.map((it, i) => (
             <div key={i} style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", marginBottom: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: SUGGEST_TYPES[it.type] === "好みに近い" ? "var(--terra)" : "var(--mocha)", borderRadius: 10, padding: "2px 9px", flexShrink: 0 }}>{SUGGEST_TYPES[it.type] || it.type}</span>
                 <span className="cd-serif" style={{ fontSize: 14.5, fontWeight: 700, color: "var(--espresso)" }}>{[it.origin, it.process, it.roastLevel].filter(Boolean).join(" · ")}</span>
               </div>
-              {it.flavors.length > 0 && (
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
+              {/* 表からの事実（香り・酸味・ボディ）は短いタグで。文章はAIの「おすすめの理由」だけ */}
+              {(it.flavors.length > 0 || (it.kb && ORIGIN_KB[it.origin])) && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", marginBottom: 8 }}>
                   {it.flavors.map(f => <span key={f} style={{ fontSize: 11.5, fontWeight: 700, color: "var(--terra)", background: "var(--paper)", border: "1px solid rgba(179,85,47,.3)", borderRadius: 20, padding: "1px 9px" }}>{f}</span>)}
+                  {it.kb && ORIGIN_KB[it.origin] && <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 4 }}>酸味 {ORIGIN_KB[it.origin].acidity} · ボディ {ORIGIN_KB[it.origin].body}</span>}
                 </div>
               )}
-              {it.reason && <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.7 }}>{it.reason}</div>}
+              {it.reason && (
+                <>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", marginBottom: 2 }}>おすすめの理由</div>
+                  <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.7 }}>{it.reason}</div>
+                </>
+              )}
             </div>
           ))}
-          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>香りや説明はAIによる一般的な傾向です。実際の風味は、地域・農園・焙煎によって豆ごとに異なります。</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12, whiteSpace: "pre-line" }}>{latest.items.some(x => x.kb)
+            ? "香りや特徴は、コーヒーの専門家の解説などで一般的に言われる傾向です。\n実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"
+            : "香りや説明はAIによる一般的な傾向です。\n実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"}</div>
         </>
       )}
       {err && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{err}</div>}
