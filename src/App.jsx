@@ -58,11 +58,103 @@ const store = {
     if (error) throw error;
     return data ? { exists: true, value: data.value } : { exists: false, value: undefined };
   },
+  // 保存できたら true（通常の保存は結果を見ないが、バックアップからの復元では確認する）
   async set(k, v, { force = false } = {}) {
     try {
-      if (!_uid || (!_ready && !force)) return;
-      await supabase.from("user_data").upsert({ user_id: _uid, key: k, value: v });
-    } catch (e) { /* 通信エラー等 */ }
+      if (!_uid || (!_ready && !force)) return false;
+      const { error } = await supabase.from("user_data").upsert({ user_id: _uid, key: k, value: v });
+      return !error;
+    } catch (e) { return false; /* 通信エラー等 */ }
+  },
+};
+
+// ====== バックアップ（書き出し・復元）======
+const BACKUP_KEYS = ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs", "cd_proposed", "cd_profile"];
+const downloadJSON = (obj, filename) => {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+const backupFileName = (suffix = "") => {
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  return `drip-diary-backup-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${suffix}.json`;
+};
+// 読み込んだファイルがこのアプリのバックアップかを確認する
+const validateBackup = (obj) => {
+  if (!obj || obj.app !== "drip-diary" || !obj.data) return "Drip Diary のバックアップファイルではありません。";
+  const d = obj.data;
+  for (const k of ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs"]) if (!Array.isArray(d[k])) return "ファイルの中身が壊れているようです。";
+  return null;
+};
+
+// ====== 変更履歴（user_data_history、DBのトリガーが自動で記録）======
+// 履歴の各行は「その変更で上書きされる前の値」。次の行（または現在の値）と比べると、何をした変更かが分かる
+const CHANGE_NOUNS = { cd_logs: "記録", cd_beans: "豆", cd_favorites: "定番レシピ", cd_grinders: "ミル", cd_drippers: "ドリッパー" };
+// 1つのキーの「変更前→変更後」から、「記録を追加」「豆を編集」のような説明を作る
+const describeChange = (key, before, after, nameOfBean) => {
+  if (key === "cd_proposed") return [{ text: "次の一杯の提案を更新", minor: true }];
+  if (key === "cd_profile") return [{ text: "プロフィールを編集", minor: true }];
+  const noun = CHANGE_NOUNS[key];
+  if (!noun) return [];
+  const label = (x) => key === "cd_logs"
+    ? `${new Date(x.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} ${nameOfBean(x.beanId) || x.beanName || "不明な豆"} ★${x.satisfaction ?? "-"}`
+    : x.name;
+  const a = Array.isArray(before) ? before : [], b = Array.isArray(after) ? after : [];
+  const am = new Map(a.map(x => [x.id, x])), bm = new Map(b.map(x => [x.id, x]));
+  const out = [];
+  b.filter(x => !am.has(x.id)).forEach(x => out.push({ text: `${noun}を追加`, sub: label(x) }));
+  a.filter(x => !bm.has(x.id)).forEach(x => out.push({ text: `${noun}を削除`, sub: label(x) }));
+  b.filter(x => am.has(x.id) && JSON.stringify(am.get(x.id)) !== JSON.stringify(x)).forEach(x => {
+    const o = am.get(x.id);
+    const verb = key === "cd_beans" && !o.archived && x.archived ? "アーカイブ" : key === "cd_beans" && o.archived && !x.archived ? "使用中に戻す" : "編集";
+    out.push({ text: `${noun}を${verb}`, sub: label(x) });
+  });
+  // 同じ種類の変更が複数あるときは1行にまとめる（例：記録を追加（3件））
+  const merged = [];
+  out.forEach(c => {
+    const m = merged.find(x => x.text === c.text);
+    if (m) { m.count++; if (m.subs.length < 2) m.subs.push(c.sub); } else merged.push({ text: c.text, count: 1, subs: [c.sub] });
+  });
+  return merged.map(m => ({ text: m.count > 1 ? `${m.text}（${m.count}件）` : m.text, sub: m.subs.join("、") + (m.count > 2 ? " ほか" : "") }));
+};
+const serverHistory = {
+  // 変更の一覧（新しい順）。1分以内に続けて保存されたもの（例：記録と次の一杯）は1つの変更にまとめる
+  async changes(current) {
+    const { data, error } = await supabase.from("user_data_history").select("key, value, changed_at").order("changed_at", { ascending: false }).limit(150);
+    if (error) throw error;
+    const rows = data || [];
+    // 豆の名前は、現在と履歴に出てくる豆から探す
+    const beanPool = [...(current.cd_beans || []), ...rows.filter(r => r.key === "cd_beans").flatMap(r => Array.isArray(r.value) ? r.value : [])];
+    const nameOfBean = (id) => beanPool.find(b => b.id === id)?.name;
+    const groups = [];
+    rows.forEach((r, i) => {
+      // 変更後の値＝同じキーで1つ新しい履歴の値（無ければ現在の値）
+      const newer = rows.slice(0, i).reverse().find(x => x.key === r.key);
+      const items = describeChange(r.key, r.value, newer ? newer.value : current[r.key], nameOfBean);
+      const t = new Date(r.changed_at).getTime();
+      const last = groups[groups.length - 1];
+      if (last && last.at - t < 60000) { last.at = t; last.items.unshift(...items); }
+      else groups.push({ at: t, items });
+    });
+    // 主な変更があるときは「次の一杯の提案を更新」などの付随的な変更は表示しない
+    return groups.map(g => {
+      const major = g.items.filter(x => !x.minor);
+      const items = (major.length ? major : g.items).filter((x, i, arr) => arr.findIndex(y => y.text === x.text && y.sub === x.sub) === i);
+      return { at: g.at, items };
+    }).filter(g => g.items.length);
+  },
+  // 時点 at の「直前」の全データ（＝1つ前の変更の「直後」の状態）。各キーについて at 以降で最初の履歴（＝その変更の前の値）、無ければ現在の値
+  async stateBefore(at, current) {
+    const iso = new Date(at).toISOString();
+    const out = {};
+    for (const k of BACKUP_KEYS) {
+      const { data, error } = await supabase.from("user_data_history").select("value").eq("key", k).gte("changed_at", iso).order("changed_at", { ascending: true }).limit(1).maybeSingle();
+      if (error) throw error;
+      out[k] = data ? data.value : current[k];
+    }
+    return out;
   },
 };
 
@@ -284,6 +376,20 @@ export default function App() {
   const saveLogs = (l) => { setLogs(l); store.set("cd_logs", l); };
   const saveProposed = (p) => { setProposed(p); store.set("cd_proposed", p); };
 
+  // バックアップ：今のデータを1つのオブジェクトに / ファイルの中身で全データを置き換え
+  const makeBackup = () => ({
+    app: "drip-diary", version: 1, exportedAt: new Date().toISOString(),
+    data: { cd_beans: beans, cd_grinders: grinders, cd_drippers: drippers, cd_favorites: favorites, cd_logs: logs, cd_proposed: proposed, cd_profile: profile },
+  });
+  const restoreBackup = async (backup) => {
+    const d = backup.data;
+    const next = { cd_beans: d.cd_beans, cd_grinders: d.cd_grinders, cd_drippers: d.cd_drippers, cd_favorites: d.cd_favorites, cd_logs: d.cd_logs, cd_proposed: d.cd_proposed ?? null, cd_profile: d.cd_profile || profile };
+    const results = await Promise.all(BACKUP_KEYS.map(k => store.set(k, next[k])));
+    setBeans(next.cd_beans); setGrinders(next.cd_grinders); setDrippers(next.cd_drippers); setFavorites(next.cd_favorites);
+    setLogs(next.cd_logs); setProposed(next.cd_proposed); setProfile(next.cd_profile);
+    return results.every(Boolean);
+  };
+
   const [editingId, setEditingId] = useState(null);
   const [flowStep, setFlowStep] = useState("rec1");
   const [showResume, setShowResume] = useState(false);
@@ -400,7 +506,7 @@ export default function App() {
         {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
-        {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
+        {screen === "profile" && <Profile makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
@@ -2491,7 +2597,7 @@ function Auth() {
 }
 
 // ====== プロフィール ======
-function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
+function Profile({ makeBackup, restoreBackup, profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
   const [editOpen, setEditOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const notify = useContext(ToastCtx);
@@ -2545,7 +2651,7 @@ function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout
       <Btn kind="ghost" onClick={onLogout} style={{ width: "100%", marginTop: 14 }}>ログアウト</Btn>
 
       {editOpen && <ProfileEditModal profile={profile} saveProfile={saveProfile} onClose={() => setEditOpen(false)} notify={notify} />}
-      {settingsOpen && <SettingsModal email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
+      {settingsOpen && <SettingsModal makeBackup={makeBackup} restoreBackup={restoreBackup} email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
     </div>
   );
 }
@@ -2593,8 +2699,63 @@ function ProfileEditModal({ profile, saveProfile, onClose, notify }) {
 }
 
 // 設定（アカウント・ログアウト・削除）
-function SettingsModal({ email, onClose, onRequestDeleteAccount }) {
-  const [mode, setMode] = useState(null); // null | email | pw
+function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDeleteAccount }) {
+  const [mode, setMode] = useState(null); // null | email | pw | restore
+  const notify = useContext(ToastCtx);
+  const fileRef = useRef(null);
+  const [pending, setPending] = useState(null); // 読み込んだバックアップ（確認待ち）
+  const [changes, setChanges] = useState(null); // 変更履歴（新しい順）
+  const openHistory = async () => {
+    setMode("history"); setChanges(null); setRestoreMsg("");
+    try { setChanges(await serverHistory.changes(makeBackup().data)); }
+    catch { setChanges([]); setRestoreMsg("変更履歴を読み込めませんでした。サーバー側の設定が済んでいないか、通信に失敗しています。"); }
+  };
+  // 選んだ変更の「直後」の状態に戻す（一般的な版の履歴と同じ）。
+  // i は changes（新しい順）の位置。i = changes.length は「一番古い変更より前の状態」
+  // 変更 i の直後の状態 ＝ 1つ新しい変更 i-1 の直前の状態。取り消されるのは i より新しい変更
+  const pickVersion = async (i) => {
+    setBusy(true); setRestoreMsg("");
+    try {
+      const data = await serverHistory.stateBefore(changes[i - 1].at, makeBackup().data);
+      setPending({ app: "drip-diary", version: 1, data, fromHistory: true, at: i < changes.length ? changes[i].at : null, undone: changes.slice(0, i) });
+      setMode("restore");
+    } catch { setRestoreMsg("この時点のデータを読み込めませんでした。"); }
+    setBusy(false);
+  };
+  const [restoreMsg, setRestoreMsg] = useState("");
+  // 前回の書き出し日時（この端末のみ・目安表示用）
+  const [lastExport, setLastExport] = useState(() => { try { return localStorage.getItem("cd_last_export") || ""; } catch { return ""; } });
+  const exportNow = () => {
+    downloadJSON(makeBackup(), backupFileName());
+    const now = new Date().toISOString();
+    try { localStorage.setItem("cd_last_export", now); } catch { /* 保存できなくても書き出しは成功 */ }
+    setLastExport(now);
+    notify("データを書き出しました");
+  };
+  const pickFile = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setRestoreMsg("");
+    try {
+      const obj = JSON.parse(await f.text());
+      const err = validateBackup(obj);
+      if (err) { setRestoreMsg(err); return; }
+      setPending(obj); setMode("restore");
+    } catch { setRestoreMsg("ファイルを読み込めませんでした。"); }
+  };
+  const doRestore = async () => {
+    setBusy(true);
+    // ファイルからの復元は、置き換える前に今のデータを自動で書き出しておく
+    // （自動バックアップからの復元は、復元前の状態も履歴に残るので不要）
+    if (!pending.fromHistory) downloadJSON(makeBackup(), backupFileName("-before-restore"));
+    const ok = await restoreBackup(pending);
+    setBusy(false);
+    if (ok) { notify(pending.fromHistory ? "元に戻しました" : "ファイルから復元しました"); setPending(null); setMode(null); }
+    else setRestoreMsg("一部のデータを保存できませんでした。通信状態を確認して、もう一度お試しください。");
+  };
+  const fmtShort = (t) => new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
   const [newEmail, setNewEmail] = useState("");
   const [newPw, setNewPw] = useState("");
   const [acctMsg, setAcctMsg] = useState("");
@@ -2641,7 +2802,7 @@ function SettingsModal({ email, onClose, onRequestDeleteAccount }) {
 
   return (
     <ModalShell title="設定" onClose={onClose}>
-      <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "2px 0 4px", letterSpacing: ".04em" }}>アカウント</div>
+      {(mode === null || mode === "email" || mode === "pw") && <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "2px 0 4px", letterSpacing: ".04em" }}>アカウント</div>}
 
       {mode === null && (
         <>
@@ -2678,12 +2839,100 @@ function SettingsModal({ email, onClose, onRequestDeleteAccount }) {
       {acctMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 12, lineHeight: 1.7 }}>{acctMsg}</div>}
 
       {mode === null && (
+        <>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データ</div>
+          {row("変更履歴", "以前の状態に戻す", openHistory)}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>変更のたびに、サーバーへ自動でバックアップされます（直近7日はすべて、90日前までは1日1つ）。</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "18px 0 4px", letterSpacing: ".04em" }}>ファイル（手元に保存したいとき）</div>
+          {row("ファイルに書き出す", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}` : "", exportNow)}
+          {row("ファイルから復元", "ファイルを選ぶ", () => fileRef.current?.click())}
+          <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{ display: "none" }} />
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 8, lineHeight: 1.7 }}>{restoreMsg}</div>}
+        </>
+      )}
+
+      {mode === "history" && (
+        <div className="cd-fade" style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>変更履歴</div>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>選んだ時点の状態に戻せます。</div>
+          {changes === null && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>読み込み中…</div>}
+          {changes && changes.length === 0 && !restoreMsg && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>まだ変更履歴はありません。</div>}
+          {changes && changes.slice(0, 60).map((g, i) => (
+            <button key={g.at} disabled={busy || i === 0} onClick={() => pickVersion(i)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: i === 0 ? "1.5px solid var(--terra)" : "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy || i === 0 ? "default" : "pointer", fontFamily: "inherit", display: "flex", gap: 12 }}>
+              <span style={{ flexShrink: 0, width: 72, paddingTop: 1 }}>
+                <span style={{ fontSize: 12, color: "var(--muted)" }}>{fmtShort(g.at)}</span>
+                {i === 0 && <span style={{ display: "inline-block", marginTop: 4, fontSize: 10.5, fontWeight: 700, color: "#fff", background: "var(--terra)", borderRadius: 10, padding: "1px 8px" }}>現在</span>}
+              </span>
+              <ChangeLines items={g.items} />
+            </button>
+          ))}
+          {changes && changes.length > 0 && changes.length <= 60 && (
+            <button disabled={busy} onClick={() => pickVersion(changes.length)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy ? "default" : "pointer", fontFamily: "inherit", display: "flex", gap: 12 }}>
+              <span style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, width: 72 }}>それ以前</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--espresso)" }}>最も古いバックアップ</span>
+            </button>
+          )}
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", margin: "8px 0", lineHeight: 1.7 }}>{restoreMsg}</div>}
+          <Btn kind="ghost" onClick={() => { setMode(null); setRestoreMsg(""); }} style={{ width: "100%", marginTop: 8 }}>戻る</Btn>
+        </div>
+      )}
+
+      {mode === "restore" && pending && pending.fromHistory && (
+        <div className="cd-fade" style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>{pending.at ? `${fmtShort(pending.at)} の状態に戻しますか？` : "最も古いバックアップの状態に戻しますか？"}</div>
+          <div style={{ fontSize: 12.5, color: "var(--mocha)", marginBottom: 6 }}>これより後の変更（{pending.undone.length}件）が取り消されます。</div>
+          <div style={{ background: "var(--paper)", borderRadius: 12, padding: "6px 14px", marginBottom: 10 }}>
+            {pending.undone.slice(0, 5).map(g => (
+              <div key={g.at} style={{ display: "flex", gap: 12, padding: "6px 0", borderBottom: "1px dotted var(--line)" }}>
+                <span style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, width: 72, paddingTop: 1 }}>{fmtShort(g.at)}</span>
+                <ChangeLines items={g.items} />
+              </div>
+            ))}
+            {pending.undone.length > 5 && <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>ほか {pending.undone.length - 5}件</div>}
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>元に戻したあとも、変更履歴から取り消せます。</div>
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn kind="ghost" onClick={() => { setPending(null); setRestoreMsg(""); setMode("history"); }} style={{ flex: 1 }}>キャンセル</Btn>
+            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "処理中…" : "元に戻す"}</Btn>
+          </div>
+        </div>
+      )}
+
+      {mode === "restore" && pending && !pending.fromHistory && (
+        <div className="cd-fade" style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>このファイルの内容に復元しますか？</div>
+          <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.8, marginBottom: 10 }}>書き出した日時：{fmtDate(pending.exportedAt)}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>現在のデータは上書きされます。復元の前に、現在のデータを自動でファイルに書き出します。</div>
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn kind="ghost" onClick={() => { setPending(null); setRestoreMsg(""); setMode(null); }} style={{ flex: 1 }}>キャンセル</Btn>
+            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "処理中…" : "復元"}</Btn>
+          </div>
+        </div>
+      )}
+
+      {mode === null && (
         <div style={{ borderTop: "1px solid var(--line)", marginTop: 24, paddingTop: 18 }}>
           <button onClick={onRequestDeleteAccount} style={{ width: "100%", background: "none", border: "1.5px solid var(--danger)", color: "var(--danger)", fontWeight: 700, fontSize: 13.5, padding: "12px", borderRadius: 12, cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>アカウントを削除する</button>
           <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 10, lineHeight: 1.7 }}>アカウントとすべての記録が削除され、元に戻せません。</div>
         </div>
       )}
     </ModalShell>
+  );
+}
+
+// 変更履歴の1件分（「記録を追加」＋対象の名前）
+function ChangeLines({ items }) {
+  return (
+    <span style={{ flex: 1, minWidth: 0 }}>
+      {items.map((c, i) => (
+        <div key={i} style={{ marginBottom: i < items.length - 1 ? 4 : 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--espresso)" }}>{c.text}</div>
+          {c.sub && <div style={{ fontSize: 11.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.sub}</div>}
+        </div>
+      ))}
+    </span>
   );
 }
 
