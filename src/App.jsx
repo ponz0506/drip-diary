@@ -1291,10 +1291,8 @@ function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
             </div>
           ))}
           <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12, whiteSpace: "pre-line" }}>{latest.items.some(x => x.kb)
-            ? "香りや特徴は、コーヒーの専門家の解説などで一般的に言われる傾向です。
-実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"
-            : "香りや説明はAIによる一般的な傾向です。
-実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"}</div>
+            ? "香りや特徴は、コーヒーの専門家の解説などで一般的に言われる傾向です。\n実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"
+            : "香りや説明はAIによる一般的な傾向です。\n実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"}</div>
         </>
       )}
       {err && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{err}</div>}
