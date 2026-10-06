@@ -520,8 +520,8 @@ export default function App() {
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
         {screen === "profile" && <Profile suggestions={suggestions} saveSuggestions={saveSuggestions} makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
-        {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
-        {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
+        {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
+        {screen === "rec2" && <Rec2 editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
           onSave={(d) => saveDraftAsLog(d)} />}
       </div>
@@ -1721,7 +1721,7 @@ function Beans({ beans, saveBeans, logs }) {
 }
 
 // ====== STEP1 豆選択 ======
-function Rec1({ draft, setDraft, beans, saveBeans, setScreen }) {
+function Rec1({ draft, setDraft, beans, saveBeans, setScreen, editing, onSaveDirect }) {
   const [showArchived, setShowArchived] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
   const notify = useContext(ToastCtx);
@@ -1777,7 +1777,15 @@ function Rec1({ draft, setDraft, beans, saveBeans, setScreen }) {
         </div>
       )}
 
-      <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+      {editing ? (
+        // 日記の編集：ここで保存して終えられる。続けてレシピ・味わいメモも直せる
+        <>
+          <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={onSaveDirect}>変更を保存</Btn>
+          <Btn kind="ghost" disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 10 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+        </>
+      ) : (
+        <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+      )}
 
       {quickAdd && <QuickAddBean onClose={() => setQuickAdd(false)} onSave={(bean) => {
         const nb = { ...bean, id: uid(), createdAt: Date.now() };
@@ -2267,7 +2275,7 @@ function DripTimer({ draft, grinders, drippers, onFinish, onExit }) {
   );
 }
 
-function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, setScreen }) {
+function Rec2({ editing, onSaveDirect, draft, setDraft, beans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, setScreen }) {
   const beanName = beans.find(b => b.id === draft.beanId)?.name || draft.beanName || "未選択";
   return (
     <div className="cd-fade">
@@ -2279,10 +2287,19 @@ function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDr
       </div>
       <RecipeFields value={draft} setValue={setDraft} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} />
 
-      <Btn onClick={() => setScreen("timer")} style={{ width: "100%", marginBottom: 10, background: "var(--crema)", color: "var(--espresso)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-        <Icon name="brew" size={18} />ドリップスタート
-      </Btn>
-      <Btn style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+      {editing ? (
+        <>
+          <Btn style={{ width: "100%", marginBottom: 10 }} onClick={onSaveDirect}>変更を保存</Btn>
+          <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+        </>
+      ) : (
+        <>
+          <Btn onClick={() => setScreen("timer")} style={{ width: "100%", marginBottom: 10, background: "var(--crema)", color: "var(--espresso)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Icon name="brew" size={18} />ドリップスタート
+          </Btn>
+          <Btn style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+        </>
+      )}
     </div>
   );
 }
