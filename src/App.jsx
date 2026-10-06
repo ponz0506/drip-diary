@@ -89,6 +89,36 @@ const validateBackup = (obj) => {
   return null;
 };
 
+// ====== サーバー側の変更履歴（user_data_history、DBのトリガーが自動で記録）======
+const KEY_LABELS = { cd_beans: "豆", cd_grinders: "ミル", cd_drippers: "ドリッパー", cd_favorites: "定番レシピ", cd_logs: "記録", cd_proposed: "次の一杯", cd_profile: "プロフィール" };
+const serverHistory = {
+  // 戻せる時点の一覧（新しい順）。1分以内の連続した変更は1つの時点にまとめる
+  async points() {
+    const { data, error } = await supabase.from("user_data_history").select("key, changed_at").order("changed_at", { ascending: false }).limit(300);
+    if (error) throw error;
+    const pts = [];
+    (data || []).forEach(r => {
+      const t = new Date(r.changed_at).getTime();
+      const last = pts[pts.length - 1];
+      if (last && last.at - t < 60000) { last.at = t; last.keys.add(r.key); }
+      else pts.push({ at: t, keys: new Set([r.key]) });
+    });
+    return pts.map(x => ({ at: x.at, keys: BACKUP_KEYS.filter(k => x.keys.has(k)) }));
+  },
+  // 時点 at の「直前」の全データ。履歴には上書き前の値が入っているので、
+  // 各キーについて at 以降で最初の履歴を使い、無ければ（その後変わっていない）現在の値を使う
+  async stateBefore(at, current) {
+    const iso = new Date(at).toISOString();
+    const out = {};
+    for (const k of BACKUP_KEYS) {
+      const { data, error } = await supabase.from("user_data_history").select("value").eq("key", k).gte("changed_at", iso).order("changed_at", { ascending: true }).limit(1).maybeSingle();
+      if (error) throw error;
+      out[k] = data ? data.value : current[k];
+    }
+    return out;
+  },
+};
+
 const SEED_BEAN = {
   id: uid(), name: "エチオピア イルガチェフェ",
   origin: "エチオピア / イルガチェフェ", variety: "ヘアルーム", process: "ウォッシュド",
@@ -2635,6 +2665,21 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
   const notify = useContext(ToastCtx);
   const fileRef = useRef(null);
   const [pending, setPending] = useState(null); // 読み込んだバックアップ（確認待ち）
+  const [points, setPoints] = useState(null); // サーバー履歴の時点一覧
+  const openHistory = async () => {
+    setMode("history"); setPoints(null); setRestoreMsg("");
+    try { setPoints(await serverHistory.points()); }
+    catch { setPoints([]); setRestoreMsg("自動バックアップを読み込めませんでした。サーバー側の設定が済んでいないか、通信に失敗しています。"); }
+  };
+  const pickPoint = async (pt) => {
+    setBusy(true); setRestoreMsg("");
+    try {
+      const data = await serverHistory.stateBefore(pt.at, makeBackup().data);
+      setPending({ app: "drip-diary", version: 1, exportedAt: new Date(pt.at).toISOString(), data, fromHistory: true });
+      setMode("restore");
+    } catch { setRestoreMsg("この時点のデータを読み込めませんでした。"); }
+    setBusy(false);
+  };
   const [restoreMsg, setRestoreMsg] = useState("");
   // 前回の書き出し日時（この端末のみ・目安表示用）
   const [lastExport, setLastExport] = useState(() => { try { return localStorage.getItem("cd_last_export") || ""; } catch { return ""; } });
@@ -2659,11 +2704,12 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
   };
   const doRestore = async () => {
     setBusy(true);
-    // 置き換える前に、今のデータを自動で書き出しておく
-    downloadJSON(makeBackup(), backupFileName("-before-restore"));
+    // ファイルからの復元は、置き換える前に今のデータを自動で書き出しておく
+    // （自動バックアップからの復元は、復元前の状態も履歴に残るので不要）
+    if (!pending.fromHistory) downloadJSON(makeBackup(), backupFileName("-before-restore"));
     const ok = await restoreBackup(pending);
     setBusy(false);
-    if (ok) { notify("バックアップから復元しました"); setPending(null); setMode(null); }
+    if (ok) { notify(pending.fromHistory ? "選んだ時点に戻しました" : "バックアップから復元しました"); setPending(null); setMode(null); }
     else setRestoreMsg("一部のデータを保存できませんでした。通信状態を確認して、もう一度お試しください。");
   };
   const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
@@ -2752,26 +2798,45 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
       {mode === null && (
         <>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データ</div>
-          {row("データを書き出す", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}` : "未実施", exportNow)}
-          {row("バックアップから復元", "ファイルを選ぶ", () => fileRef.current?.click())}
+          {row("過去の状態に戻す", "自動バックアップ", openHistory)}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>データは変更のたびに、変更前の状態がサーバーへ自動で保存されています（直近7日はすべて、90日前までは1日1つ）。</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "18px 0 4px", letterSpacing: ".04em" }}>ファイル（手元に保存したいとき）</div>
+          {row("ファイルに書き出す", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}` : "", exportNow)}
+          {row("ファイルから復元", "ファイルを選ぶ", () => fileRef.current?.click())}
           <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{ display: "none" }} />
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>記録・豆・器具・定番レシピなど、すべてのデータを1つのファイルに保存します。ときどき書き出しておくと安心です。</div>
           {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 8, lineHeight: 1.7 }}>{restoreMsg}</div>}
         </>
       )}
 
+      {mode === "history" && (
+        <div className="cd-fade" style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>どの時点に戻しますか？</div>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>選んだ変更が行われる「直前」の状態に戻します。戻す前に内容を確認できます。</div>
+          {points === null && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>読み込み中…</div>}
+          {points && points.length === 0 && !restoreMsg && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>まだ自動バックアップはありません。データを変更すると、変更前の状態がここに並びます。</div>}
+          {points && points.slice(0, 60).map(pt => (
+            <button key={pt.at} disabled={busy} onClick={() => pickPoint(pt)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy ? "default" : "pointer", fontFamily: "inherit" }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--espresso)" }}>{fmtDate(pt.at)} の直前</div>
+              <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>{pt.keys.map(k => KEY_LABELS[k] || k).join("・")}が変更される前</div>
+            </button>
+          ))}
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", margin: "8px 0", lineHeight: 1.7 }}>{restoreMsg}</div>}
+          <Btn kind="ghost" onClick={() => { setMode(null); setRestoreMsg(""); }} style={{ width: "100%", marginTop: 8 }}>戻る</Btn>
+        </div>
+      )}
+
       {mode === "restore" && pending && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>このバックアップで復元しますか？</div>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>{pending.fromHistory ? "この時点に戻しますか？" : "このバックアップで復元しますか？"}</div>
           <div style={{ background: "var(--paper)", borderRadius: 12, padding: "10px 14px", fontSize: 12.5, lineHeight: 1.9, marginBottom: 10 }}>
-            <div>書き出した日時：<b>{fmtDate(pending.exportedAt)}</b></div>
+            <div>{pending.fromHistory ? "時点" : "書き出した日時"}：<b>{fmtDate(pending.exportedAt)}</b>{pending.fromHistory ? " の直前" : ""}</div>
             <div>記録 <b>{pending.data.cd_logs.length}</b>杯 · 豆 <b>{pending.data.cd_beans.length}</b>袋 · 定番レシピ <b>{pending.data.cd_favorites.length}</b>件</div>
             <div>ミル {pending.data.cd_grinders.length}台 · ドリッパー {pending.data.cd_drippers.length}台</div>
           </div>
-          <div style={{ fontSize: 12, color: "var(--terra)", lineHeight: 1.7, marginBottom: 12 }}>今のデータはすべて、このバックアップの内容に置き換わります。念のため、置き換える前に今のデータを自動で書き出します。</div>
+          <div style={{ fontSize: 12, color: "var(--terra)", lineHeight: 1.7, marginBottom: 12 }}>{pending.fromHistory ? "今のデータはすべて、この時点の内容に置き換わります。戻したあとも、同じ画面から今の状態に戻せます。" : "今のデータはすべて、このバックアップの内容に置き換わります。念のため、置き換える前に今のデータを自動で書き出します。"}</div>
           {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
           <div style={{ display: "flex", gap: 10 }}>
-            <Btn kind="ghost" onClick={() => { setPending(null); setMode(null); setRestoreMsg(""); }} style={{ flex: 1 }}>キャンセル</Btn>
+            <Btn kind="ghost" onClick={() => { const back = pending.fromHistory; setPending(null); setRestoreMsg(""); if (back) setMode("history"); else setMode(null); }} style={{ flex: 1 }}>キャンセル</Btn>
             <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "復元中…" : "復元する"}</Btn>
           </div>
         </div>
