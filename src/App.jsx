@@ -1214,7 +1214,7 @@ const buildSuggestSystem = () => {
     "・苦手な香りや「もう買わない豆」の傾向は避ける。\n\n" +
     `【風味の傾向の表】\n■産地\n${origins}\n■精製\n${processes}\n■焙煎度\n${roasts}\n\n` +
     "前後の説明やマークダウンは付けず、次のJSONオブジェクトだけを返す:\n" +
-    '{"summary":"利用者の好みをひとことで（25字以内）","items":[{"type":"match","origin":"表の産地名","process":"表の精製名","roastLevel":"表の焙煎度","reason":"好みのどこに合うか（50字以内）"},{"type":"discover", 同じ形 }]}';
+    '{"items":[{"type":"match","origin":"表の産地名","process":"表の精製名","roastLevel":"表の焙煎度","reason":"好みのどこに合うか（50字以内）"},{"type":"discover", 同じ形 }]}';
 };
 
 async function requestBeanSuggestion(prof) {
@@ -1238,7 +1238,7 @@ async function requestBeanSuggestion(prof) {
     return { type: i === 0 ? "match" : "discover", origin, process, roastLevel, flavors: expectedFlavors({ origin, process, roastLevel }), reason: String(x.reason || "").trim(), kb: true };
   }).filter(Boolean);
   if (!items.length) throw new Error("提案を読み取れませんでした");
-  return { id: uid(), createdAt: Date.now(), summary: String(r.summary || "").trim(), items, basis: { cups: prof.cupCount, beans: prof.beanCount } };
+  return { id: uid(), createdAt: Date.now(), items, basis: { cups: prof.cupCount, beans: prof.beanCount } };
 }
 
 function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
@@ -1268,7 +1268,7 @@ function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
       {!latest && <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>あなたの好みから、次に買う豆のタイプ（産地・精製・焙煎度）をAIが提案します。</div>}
       {latest && (
         <>
-          {latest.summary && <div style={{ fontSize: 12.5, color: "var(--bean)", margin: "4px 0 12px" }}>{latest.summary}</div>}
+          <div style={{ height: 8 }} />
           {latest.items.map((it, i) => (
             <div key={i} style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", marginBottom: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
