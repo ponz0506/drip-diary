@@ -1263,7 +1263,7 @@ function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
     <div style={card}>
       <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
         <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)" }}>次に試したい豆</div>
-        {latest && <div style={{ fontSize: 11, color: "var(--muted)" }}>{new Date(latest.createdAt).toLocaleDateString("ja-JP", { month: "long", day: "numeric" })}の提案</div>}
+        {latest && <div style={{ fontSize: 11, color: "var(--muted)" }}>{new Date(latest.createdAt).toLocaleDateString("ja-JP")}の提案</div>}
       </div>
       {!latest && <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>あなたの好みから、次に買う豆のタイプ（産地・精製・焙煎度）をAIが提案します。</div>}
       {latest && (
@@ -1290,9 +1290,11 @@ function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
               )}
             </div>
           ))}
-          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>{latest.items.some(x => x.kb)
-            ? "香りや特徴は、コーヒーの専門家の解説などで一般的に言われる傾向です。実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"
-            : "香りや説明はAIによる一般的な傾向です。実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"}</div>
+          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12, whiteSpace: "pre-line" }}>{latest.items.some(x => x.kb)
+            ? "香りや特徴は、コーヒーの専門家の解説などで一般的に言われる傾向です。
+実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"
+            : "香りや説明はAIによる一般的な傾向です。
+実際の風味は、地域・農園・焙煎によって豆ごとに異なります。"}</div>
         </>
       )}
       {err && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{err}</div>}
