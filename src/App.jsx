@@ -2338,7 +2338,6 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
   const setTaste = (k, v) => setDraft({ ...draft, taste: { ...draft.taste, [k]: Number(v) } });
   const req = <span style={{ color: "var(--terra)", fontSize: 11, marginLeft: 6 }}>必須</span>;
   const sel = flavorsOf(draft);
-  const valid = sel.length > 0;
   // 大分類はタブのように見る分類を切り替えるだけ。細かい香りの欄は、最後に選んだ中分類について開く
   const [tab, setTab] = useState(() => flavorBigOf(sel[0]?.small) || "");
   const [focus, setFocus] = useState("");
@@ -2376,7 +2375,7 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
         </div>
       ))}
 
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー{req}</div>
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー<span style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400, marginLeft: 6 }}>任意</span></div>
       <div style={{ marginBottom: 10 }}>
         <ChipRowsWithPanel items={Object.keys(FLAVOR_TREE)} selected={tab}
           onPick={bg => { setTab(tab === bg ? "" : bg); setFocus(""); }}
@@ -2405,7 +2404,7 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
             {flavorLabel(f)}<span style={{ fontSize: 13, color: "var(--muted)" }}>×</span>
           </button>
         ))}
-        {!sel.length && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>— 分類を開いて、近いものを選んでください</span>}
+        {!sel.length && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>— 感じたものがあれば選んでください</span>}
       </div>
       {maxMsg && <div style={{ fontSize: 11.5, color: "var(--terra)", marginBottom: 6 }}>香りは{MAX_FLAVORS}つまでです。外してから選んでください。</div>}
 
@@ -2417,9 +2416,8 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
           <button key={s} onClick={() => setDraft({ ...draft, satisfaction: s })} style={{ flex: 1, fontSize: 26, background: "none", border: "none", cursor: "pointer", color: s <= draft.satisfaction ? "var(--crema)" : "var(--line)" }}>★</button>
         ))}
       </div>
-      {!valid && <div style={{ fontSize: 12, color: "var(--terra)", textAlign: "center", marginBottom: 10 }}>「感じたフレーバー」を選ぶと進めます</div>}
-      <Btn disabled={!valid} style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
-      <Btn kind="ghost" disabled={!valid} style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>{editing ? "変更を保存" : "相談せずに記録する"}</Btn>
+      <Btn style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
+      <Btn kind="ghost" style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>{editing ? "変更を保存" : "相談せずに記録する"}</Btn>
     </div>
   );
 }
