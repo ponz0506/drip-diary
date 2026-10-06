@@ -852,10 +852,91 @@ function FavRecipes({ favorites, saveFavorites, grinders, drippers, startRecord 
   );
 }
 
+// ====== 好みプロフィール（集計ロジック）======
+// 画面表示と、今後のAI提案（次に買う豆）の両方で使う。数えるのはここ、解釈はAIに任せる
+const PROCESS_OPTIONS = ["ウォッシュド", "ナチュラル", "ハニー", "アナエロビック"];
+// 表記ゆれをまとめる（washed / 水洗式 → ウォッシュド など）
+const normalizeProcess = (s) => {
+  const t = (s || "").trim();
+  if (!t) return "";
+  const x = t.toLowerCase();
+  if (/honey|ハニー|パルプド/.test(x)) return "ハニー";
+  if (/anaerob|アナエロ|嫌気/.test(x)) return "アナエロビック";
+  if (/natural|ナチュラル|非水洗/.test(x)) return "ナチュラル";
+  if (/wash|ウォッシュ|水洗/.test(x)) return "ウォッシュド";
+  if (/スマトラ|wet.?hull/.test(x)) return "スマトラ式";
+  return t;
+};
+const PROFILE_DIMS = [
+  { key: "roast", label: "焙煎度", get: b => b.roastLevel || "", order: ROAST_LEVELS },
+  // 産地は国名でまとめる（「ブラジル ミナスジェライス州 …」→「ブラジル」）
+  { key: "origin", label: "産地", get: b => (b.origin || "").trim().split(/[\s　・,、/／(（]/)[0] },
+  { key: "process", label: "精製", get: b => normalizeProcess(b.process) },
+  { key: "variety", label: "品種", get: b => (b.variety || "").trim() },
+];
+function buildPreferenceProfile(logs, beans) {
+  const logsOf = (id) => logs.filter(l => l.beanId === id);
+  // 記録があるか「また買いたい？」に答えた豆だけを対象にする
+  const used = (beans || []).filter(b => logsOf(b.id).length || b.rebuy);
+  const avgSat = (ls) => (ls.length ? ls.reduce((s, l) => s + (l.satisfaction || 0), 0) / ls.length : null);
+  const dims = {};
+  PROFILE_DIMS.forEach(d => {
+    const groups = {};
+    let missing = 0;
+    used.forEach(b => {
+      const v = d.get(b);
+      if (!v) { missing++; return; }
+      const g = groups[v] || (groups[v] = { value: v, beans: [], cups: [], rebuy: { yes: 0, maybe: 0, no: 0 } });
+      g.beans.push(b); g.cups.push(...logsOf(b.id));
+      if (b.rebuy) g.rebuy[b.rebuy]++;
+    });
+    let list = Object.values(groups).map(g => ({
+      value: g.value, beanCount: g.beans.length, cupCount: g.cups.length, avg: avgSat(g.cups),
+      rebuy: g.rebuy, rebuyAnswered: g.rebuy.yes + g.rebuy.maybe + g.rebuy.no,
+    }));
+    list = d.order
+      ? list.sort((a, b) => d.order.indexOf(a.value) - d.order.indexOf(b.value))
+      : list.sort((a, b) => (b.avg ?? 0) - (a.avg ?? 0) || b.cupCount - a.cupCount);
+    dims[d.key] = { label: d.label, groups: list, missing };
+  });
+  const high = logs.filter(l => l.satisfaction >= 4), low = logs.filter(l => l.satisfaction <= 2);
+  // フレーバーは「高評価で出た回数 − 低評価で出た回数」で好き/苦手を判定（同じ味が両方に出る矛盾を防ぐ）
+  const flav = {};
+  high.forEach(l => { if (l.flavorSmall) (flav[l.flavorSmall] = flav[l.flavorSmall] || { hi: 0, lo: 0 }).hi++; });
+  low.forEach(l => { if (l.flavorSmall) (flav[l.flavorSmall] = flav[l.flavorSmall] || { hi: 0, lo: 0 }).lo++; });
+  const flavList = Object.entries(flav).map(([flavor, c]) => ({ flavor, hi: c.hi, lo: c.lo, net: c.hi - c.lo }));
+  const liked = flavList.filter(f => f.net > 0).sort((a, b) => b.net - a.net || b.hi - a.hi).slice(0, 3);
+  const disliked = flavList.filter(f => f.net < 0).sort((a, b) => a.net - b.net || b.lo - a.lo).slice(0, 3);
+  const AX = ["酸味", "苦味", "甘味", "コク", "濃度感"];
+  const avgAx = (ls, ax) => (ls.length ? ls.reduce((s, l) => s + (l.taste?.[ax] ?? 0), 0) / ls.length : 0);
+  const taste = high.length ? AX.map(ax => ({ ax, d: avgAx(high, ax) - avgAx(logs, ax) })).filter(x => Math.abs(x.d) >= 0.4).sort((a, b) => Math.abs(b.d) - Math.abs(a.d)).slice(0, 2) : [];
+  return {
+    cupCount: logs.length, beanCount: used.length, dims,
+    likedFlavors: liked, dislikedFlavors: disliked, taste,
+    rebuyYes: used.filter(b => b.rebuy === "yes").map(b => b.name),
+    rebuyNo: used.filter(b => b.rebuy === "no").map(b => b.name),
+  };
+}
+
+// 好みカードの1行：ラベル＋チップ
+function PrefRow({ label, items, muted }) {
+  return (
+    <>
+      <span style={{ fontSize: 11.5, color: "var(--muted)", whiteSpace: "nowrap" }}>{label}</span>
+      <span style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+        {items.map(t => (
+          <span key={t} style={{ fontSize: 12.5, fontWeight: 700, padding: "3px 10px", borderRadius: 20, maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            background: muted ? "transparent" : "var(--paper)", color: muted ? "var(--muted)" : "var(--terra)", border: `1px solid ${muted ? "var(--line)" : "rgba(179,85,47,.3)"}` }}>{t}</span>
+        ))}
+      </span>
+    </>
+  );
+}
+
 // ====== 味覚プロフィール（全記録横断・好みの傾向）======
 function TasteProfile({ logs, beans }) {
+  const [dimKey, setDimKey] = useState("roast");
   const AXES = ["酸味", "苦味", "甘味", "コク", "濃度感"];
-  const roastOf = (l) => beans.find(b => b.id === l.beanId)?.roastLevel;
   const avgOf = (arr, ax) => arr.length ? arr.reduce((s, l) => s + (l.taste?.[ax] ?? 0), 0) / arr.length : 0;
 
   if (logs.length < 3) {
@@ -873,23 +954,37 @@ function TasteProfile({ logs, beans }) {
     ...(high.length ? { 好み: Number(avgOf(high, ax).toFixed(1)) } : {}),
   }));
 
-  // 焙煎度別の平均満足度
-  const roastStats = ROAST_LEVELS.map(r => {
-    const ls = logs.filter(l => roastOf(l) === r);
-    return { roast: r, count: ls.length, avg: ls.length ? ls.reduce((s, l) => s + l.satisfaction, 0) / ls.length : 0 };
-  }).filter(x => x.count > 0);
-
-  const bestRoast = [...roastStats].filter(x => x.count >= 2).sort((a, b) => b.avg - a.avg)[0];
-
-  // 高評価時によく出るフレーバー小カテゴリ
-  const flavCount = {};
-  high.forEach(l => { if (l.flavorSmall) flavCount[l.flavorSmall] = (flavCount[l.flavorSmall] || 0) + 1; });
-  const topFlav = Object.entries(flavCount).sort((a, b) => b[1] - a[1])[0]?.[0];
+  const prof = buildPreferenceProfile(logs, beans);
+  const dimsWithData = PROFILE_DIMS.filter(d => prof.dims[d.key].groups.length);
+  const dim = prof.dims[dimKey]?.groups.length ? prof.dims[dimKey] : prof.dims[dimsWithData[0]?.key];
+  // 各軸で、2杯以上ある中で満足度が最も高いもの（比較対象が2つ以上あるときだけ）
+  const favs = dimsWithData.map(d => {
+    const g = [...prof.dims[d.key].groups].filter(x => x.cupCount >= 2 && x.avg != null).sort((a, b) => b.avg - a.avg)[0];
+    return g && prof.dims[d.key].groups.length >= 2 ? { label: d.label, value: g.value } : null;
+  }).filter(Boolean);
+  const sub = { fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "18px 0 10px" };
 
   return (
     <div style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 24 }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 4 }}>あなたの味の好み</div>
-      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 6 }}>全記録から。テラコッタが高評価（4-5★）だった味の形。</div>
+      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10 }}>{prof.cupCount}杯・{prof.beanCount}袋の記録から</div>
+
+      {/* ひと目で分かる好みカード（結論を先に） */}
+      {(favs.length > 0 || prof.taste.length > 0 || prof.likedFlavors.length > 0 || prof.dislikedFlavors.length > 0 || prof.rebuyYes.length > 0) ? (
+        <div style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 14, rowGap: 8, alignItems: "center" }}>
+          {favs.map(f => <PrefRow key={f.label} label={f.label} items={[f.value]} />)}
+          {prof.taste.length > 0 && <PrefRow label="味" items={prof.taste.map(t => `${t.ax}${t.d > 0 ? "高め" : "控えめ"}`)} />}
+          {(favs.length > 0 || prof.taste.length > 0) && (prof.likedFlavors.length > 0 || prof.dislikedFlavors.length > 0 || prof.rebuyYes.length > 0) && <div style={{ gridColumn: "1 / -1", borderTop: "1px dashed var(--line)" }} />}
+          {prof.likedFlavors.length > 0 && <PrefRow label="好きな香り" items={prof.likedFlavors.map(f => f.flavor)} />}
+          {prof.dislikedFlavors.length > 0 && <PrefRow label="苦手な香り" items={prof.dislikedFlavors.map(f => f.flavor)} muted />}
+          {prof.rebuyYes.length > 0 && <PrefRow label="また買いたい" items={prof.rebuyYes} />}
+        </div>
+      ) : (
+        <div style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", fontSize: 12, color: "var(--muted)" }}>いろいろな豆を記録すると、ここに好みがまとまります。</div>
+      )}
+
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "18px 0 4px" }}>味の形</div>
+      <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 6 }}>テラコッタが高評価（4-5★）だった味の形。</div>
       <ResponsiveContainer width="100%" height={240}>
         <RadarChart data={radarData}>
           <PolarGrid stroke="#e3d8c8" />
@@ -901,25 +996,35 @@ function TasteProfile({ logs, beans }) {
         </RadarChart>
       </ResponsiveContainer>
 
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "14px 0 10px" }}>焙煎度別の満足度</div>
-      {roastStats.map(r => (
-        <div key={r.roast} style={{ marginBottom: 8 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
-            <span>{r.roast}<span style={{ color: "var(--muted)", marginLeft: 6 }}>{r.count}杯</span></span>
-            <span style={{ color: "var(--terra)", fontWeight: 700 }}>{r.avg.toFixed(1)}★</span>
+      {/* 豆の特徴ごとの満足度 */}
+      {dim && (
+        <>
+          <div style={sub}>豆の特徴ごとの満足度</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {dimsWithData.map(d => <Chip key={d.key} small active={dim === prof.dims[d.key]} onClick={() => setDimKey(d.key)}>{d.label}</Chip>)}
           </div>
-          <div style={{ height: 6, background: "var(--cream)", borderRadius: 4, overflow: "hidden" }}>
-            <div style={{ width: `${(r.avg / 5) * 100}%`, height: "100%", background: "var(--crema)" }} />
+          {dim.groups.map(g => (
+            <div key={g.value} style={{ marginBottom: 9, opacity: g.cupCount >= 3 ? 1 : 0.6 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12, marginBottom: 3, gap: 8 }}>
+                <span style={{ minWidth: 0 }}>
+                  <b>{g.value}</b>
+                  <span style={{ color: "var(--muted)", marginLeft: 6 }}>{g.beanCount}袋 · {g.cupCount}杯</span>
+                  {g.rebuyAnswered > 0 && <span style={{ marginLeft: 6, fontSize: 11, color: g.rebuy.yes ? "var(--terra)" : "var(--muted)", fontWeight: 700 }}>また買いたい {g.rebuy.yes}/{g.rebuyAnswered}</span>}
+                </span>
+                <span style={{ color: "var(--terra)", fontWeight: 700, flexShrink: 0 }}>{g.avg != null ? `${g.avg.toFixed(1)}★` : "—"}</span>
+              </div>
+              <div style={{ height: 6, background: "var(--cream)", borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${((g.avg || 0) / 5) * 100}%`, height: "100%", background: "var(--crema)" }} />
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginTop: 6 }}>
+            薄い行は3杯未満で、参考程度です。
+            {dim.missing > 0 && <>「{dim.label}」が未入力の豆が {dim.missing} 袋あります。カルテで追記すると精度が上がります。</>}
           </div>
-        </div>
-      ))}
-
-      {(bestRoast || topFlav) && (
-        <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 12, lineHeight: 1.8 }}>
-          {bestRoast && <>満足度が高いのは <b style={{ color: "var(--terra)" }}>{bestRoast.roast}</b>（{bestRoast.avg.toFixed(1)}★）。</>}
-          {topFlav && <>高評価によく出る味は <b style={{ color: "var(--terra)" }}>{topFlav}</b>。</>}
-        </div>
+        </>
       )}
+
     </div>
   );
 }
@@ -1297,7 +1402,7 @@ function Beans({ beans, saveBeans, logs }) {
         <Field label="産地"><input style={inputStyle} value={e.origin} onChange={ev => set("origin", ev.target.value)} placeholder="国 / 地域" /></Field>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}><Field label="品種"><input style={inputStyle} value={e.variety} onChange={ev => set("variety", ev.target.value)} /></Field></div>
-          <div style={{ flex: 1 }}><Field label="精製"><input style={inputStyle} value={e.process} onChange={ev => set("process", ev.target.value)} placeholder="ウォッシュド等" /></Field></div>
+          <div style={{ flex: 1 }}><Field label="精製"><input style={inputStyle} list="process-options" value={e.process} onChange={ev => set("process", ev.target.value)} placeholder="ウォッシュド等" /><datalist id="process-options">{PROCESS_OPTIONS.map(o => <option key={o} value={o} />)}</datalist></Field></div>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}><Field label="焙煎日"><input type="date" style={inputStyle} value={e.roastDate} onChange={ev => set("roastDate", ev.target.value)} /></Field></div>
@@ -1461,18 +1566,24 @@ function Rec1({ draft, setDraft, beans, saveBeans, setScreen }) {
   );
 }
 
-// 淹れる画面からの豆の簡易登録（名前・産地・焙煎度）
+// 淹れる画面からの豆の簡易登録（名前・産地・焙煎度・精製）
 function QuickAddBean({ onClose, onSave }) {
   const [name, setName] = useState("");
   const [origin, setOrigin] = useState("");
   const [roastLevel, setRoastLevel] = useState("中煎り");
+  const [process, setProcess] = useState("");
   return (
     <ModalShell title="新しい豆を登録" onClose={onClose}>
       <Field label="名前（必須）"><input style={inputStyle} value={name} onChange={e => setName(e.target.value)} placeholder="例：エチオピア イルガチェフェ" /></Field>
       <Field label="産地"><input style={inputStyle} value={origin} onChange={e => setOrigin(e.target.value)} placeholder="例：エチオピア" /></Field>
       <Field label="焙煎度"><select style={inputStyle} value={roastLevel} onChange={e => setRoastLevel(e.target.value)}>{ROAST_LEVELS.map(r => <option key={r}>{r}</option>)}</select></Field>
-      <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0 2px", lineHeight: 1.7 }}>焙煎日や購入店などの詳細は、あとからMy棚で追記できます。</div>
-      <Btn disabled={!name.trim()} onClick={() => onSave({ name: name.trim(), origin: origin.trim(), roastLevel, variety: "", process: "", roastDate: "", shop: "", roasterNote: "" })} style={{ width: "100%", marginTop: 14 }}>登録して選択</Btn>
+      <Field label="精製方法（任意）">
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {PROCESS_OPTIONS.map(o => <Chip key={o} small active={process === o} onClick={() => setProcess(process === o ? "" : o)}>{o}</Chip>)}
+        </div>
+      </Field>
+      <div style={{ fontSize: 11, color: "var(--muted)", margin: "6px 0 2px", lineHeight: 1.7 }}>品種・焙煎日・購入店などの詳細は、あとからMy棚で追記できます。</div>
+      <Btn disabled={!name.trim()} onClick={() => onSave({ name: name.trim(), origin: origin.trim(), roastLevel, variety: "", process, roastDate: "", shop: "", roasterNote: "" })} style={{ width: "100%", marginTop: 14 }}>登録して選択</Btn>
     </ModalShell>
   );
 }
