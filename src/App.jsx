@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useContext, createContext } from "react";
+import React, { useState, useEffect, useLayoutEffect, useRef, useContext, createContext } from "react";
 import { supabase } from "./supabaseClient";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -33,12 +33,49 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;heigh
 ::-webkit-scrollbar{width:8px;}::-webkit-scrollbar-thumb{background:var(--line);border-radius:8px;}
 `;
 
+// 香りの選択肢。SCA「Coffee Taster's Flavor Wheel」（2016年、SCA・World Coffee Research）の分類を基にしている。
+// 以前の16語（柑橘・ベリー・トロピカル・完熟果実・ナッツ・ミルクチョコ・ダークチョコ・キャラメル・花・紅茶・ハーブ・緑茶・
+// スパイス・黒糖・土っぽい・焦げ・燻製）はすべて残し、過去の記録の香りもそのまま使えるようにしている
 const FLAVOR_TREE = {
-  "フルーツ系": ["柑橘", "ベリー", "トロピカル", "完熟果実"],
-  "ナッツ・チョコ系": ["ナッツ", "ミルクチョコ", "ダークチョコ", "キャラメル"],
-  "花・ハーブ系": ["花", "紅茶", "ハーブ", "緑茶"],
-  "スパイス・その他": ["スパイス", "黒糖", "土っぽい", "焦げ・燻製"],
+  "フルーツ": ["柑橘", "ベリー", "ブドウ", "リンゴ・洋梨", "桃・杏", "トロピカル", "ドライフルーツ", "完熟果実"],
+  "花・お茶": ["花", "ジャスミン", "紅茶", "緑茶"],
+  "甘さ": ["キャラメル", "黒糖", "はちみつ", "メープル", "バニラ"],
+  "ナッツ・チョコ": ["ナッツ", "アーモンド", "ミルクチョコ", "ダークチョコ"],
+  "スパイス": ["スパイス", "シナモン", "クローブ", "黒こしょう"],
+  "発酵・お酒": ["ワイン", "ラム・洋酒", "発酵感"],
+  "ハーブ・植物": ["ハーブ", "青草"],
+  "ロースト": ["トースト・穀物", "タバコ", "焦げ・燻製", "土っぽい"],
 };
+// さらに細かい香り（任意）。フレーバーホイールの一番外側の言葉を基にしている。
+// 好みの集計は中分類（FLAVOR_TREE の各語）で行い、ここは記録の補足として残す
+const FLAVOR_DETAIL = {
+  "柑橘": ["レモン", "オレンジ", "グレープフルーツ", "ライム"],
+  "ベリー": ["ブルーベリー", "ラズベリー", "ストロベリー", "ブラックベリー", "カシス"],
+  "ブドウ": ["赤ブドウ", "白ブドウ", "マスカット"],
+  "リンゴ・洋梨": ["青リンゴ", "赤リンゴ", "洋梨"],
+  "桃・杏": ["桃", "杏", "チェリー", "プラム"],
+  "トロピカル": ["パイナップル", "マンゴー", "パッションフルーツ", "ココナッツ"],
+  "ドライフルーツ": ["レーズン", "プルーン", "ドライイチジク"],
+  "花": ["ローズ", "カモミール", "ハイビスカス"],
+  "紅茶": ["ダージリン", "アールグレイ"],
+  "黒糖": ["モラセス（糖蜜）"],
+  "ナッツ": ["ピーナッツ", "ヘーゼルナッツ", "くるみ"],
+  "ダークチョコ": ["カカオ"],
+  "スパイス": ["アニス", "ナツメグ"],
+  "ワイン": ["赤ワイン", "白ワイン"],
+  "ラム・洋酒": ["ラム", "ウイスキー"],
+  "ハーブ": ["ミント", "セージ"],
+  "トースト・穀物": ["トースト", "麦芽"],
+  "土っぽい": ["杉・木"],
+};
+// 記録の香り（最大3つ）。各要素は { small: 中分類, detail: 小分類（任意） }。
+// 以前の記録（香り1つ：flavorSmall / flavorDetail）も同じ形で読む
+const MAX_FLAVORS = 3;
+const flavorsOf = (l) => Array.isArray(l?.flavors) ? l.flavors : (l?.flavorSmall ? [{ small: l.flavorSmall, detail: l.flavorDetail || "" }] : []);
+const flavorLabel = (f) => f.detail || f.small; // 表示は一番細かい言葉だけ
+const flavorText = (l, sep = "、") => flavorsOf(l).map(flavorLabel).join(sep);
+// 香り（小分類）から、今の大分類を引く（以前の大分類名「フルーツ系」などで保存された記録の表示・編集用）
+const flavorBigOf = (small) => Object.keys(FLAVOR_TREE).find(b => FLAVOR_TREE[b].includes(small)) || "";
 const TASTE_AXES = ["酸味", "苦味", "甘味", "コク", "濃度感", "雑味"];
 const ROAST_LEVELS = ["浅煎り", "中浅煎り", "中煎り", "中深煎り", "深煎り"];
 const AVATAR_EMOJIS = ["☕", "🫖", "🌱", "🫘", "🍵", "🔥", "💧", "⏱️", "📓", "✨", "🐈", "🌙"];
@@ -446,7 +483,7 @@ export default function App() {
       grounds: preset?.grounds || 15, water: preset?.water || 240, temp: preset?.temp || 92,
       grind: preset?.grind || 20, flowRate: preset?.flowRate || 4, pourUnit: preset?.pourUnit || "g", rateMode: preset?.rateMode || "all", pours: preset?.pours || [{ label: "1投目", t: 0, ml: 60 }, { label: "2投目", t: 45, ml: 90 }, { label: "3投目", t: 90, ml: 90 }],
       taste: editId ? (preset?.taste || { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 }) : { 酸味: 3, 苦味: 3, 甘味: 3, コク: 3, 濃度感: 3, 雑味: 1 },
-      flavorBig: editId ? (preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", memo: editId ? (preset?.memo || "") : "",
+      flavors: editId ? flavorsOf(preset) : [], flavorBig: editId ? (flavorBigOf(preset?.flavorSmall) || preset?.flavorBig || "") : "", flavorSmall: editId ? (preset?.flavorSmall || "") : "", flavorDetail: editId ? (preset?.flavorDetail || "") : "", memo: editId ? (preset?.memo || "") : "",
       satisfaction: editId ? (preset?.satisfaction || 3) : 3, createdAt: editId ? (preset?.createdAt || Date.now()) : Date.now(),
       chat: editId ? (preset?.chat || []) : [], nextRecipe: editId ? (preset?.nextRecipe || null) : null,
     });
@@ -511,8 +548,8 @@ export default function App() {
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
         {screen === "profile" && <Profile suggestions={suggestions} saveSuggestions={saveSuggestions} makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
-        {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
-        {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
+        {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
+        {screen === "rec2" && <Rec2 editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
           onSave={(d) => saveDraftAsLog(d)} />}
       </div>
@@ -720,7 +757,7 @@ function LogCard({ log: l, bean, onClick, trialNo, showBeanNo }) {
       </div>
       <div style={{ textAlign: "center", flexShrink: 0, marginLeft: 8 }}>
         <div style={{ color: "var(--crema)", fontSize: 15 }}>{"★".repeat(l.satisfaction)}<span style={{ color: "var(--line)" }}>{"★".repeat(5 - l.satisfaction)}</span></div>
-        {l.flavorSmall && <div style={{ fontSize: 11, color: "var(--mocha)", marginTop: 2 }}>{l.flavorSmall}</div>}
+        {flavorsOf(l).length > 0 && <div style={{ fontSize: 11, color: "var(--mocha)", marginTop: 2 }}>{flavorText(l)}</div>}
       </div>
     </div>
   );
@@ -1012,8 +1049,9 @@ function buildPreferenceProfile(logs, beans) {
   const high = logs.filter(l => l.satisfaction >= 4), low = logs.filter(l => l.satisfaction <= 2);
   // フレーバーは「高評価で出た回数 − 低評価で出た回数」で好き/苦手を判定（同じ味が両方に出る矛盾を防ぐ）
   const flav = {};
-  high.forEach(l => { if (l.flavorSmall) (flav[l.flavorSmall] = flav[l.flavorSmall] || { hi: 0, lo: 0 }).hi++; });
-  low.forEach(l => { if (l.flavorSmall) (flav[l.flavorSmall] = flav[l.flavorSmall] || { hi: 0, lo: 0 }).lo++; });
+  // 1杯で複数の香りを選んだ場合は、それぞれ1回ずつ数える（集計は中分類で）
+  high.forEach(l => flavorsOf(l).forEach(f => { (flav[f.small] = flav[f.small] || { hi: 0, lo: 0 }).hi++; }));
+  low.forEach(l => flavorsOf(l).forEach(f => { (flav[f.small] = flav[f.small] || { hi: 0, lo: 0 }).lo++; }));
   const flavList = Object.entries(flav).map(([flavor, c]) => ({ flavor, hi: c.hi, lo: c.lo, net: c.hi - c.lo }));
   const liked = flavList.filter(f => f.net > 0).sort((a, b) => b.net - a.net || b.hi - a.hi).slice(0, 3);
   const disliked = flavList.filter(f => f.net < 0).sort((a, b) => a.net - b.net || b.lo - a.lo).slice(0, 3);
@@ -1486,7 +1524,7 @@ function LogDetail({ log: l, bean, grinder, dripper, startRecord, onEdit, onRequ
             <span style={{ fontSize: 12, color: "var(--mocha)", width: 14 }}>{l.taste[ax]}</span>
           </div>
         ))}
-        {(l.flavorBig || l.flavorSmall) && <div style={{ fontSize: 13, color: "var(--mocha)", marginTop: 10 }}>フレーバー：{[l.flavorBig, l.flavorSmall].filter(Boolean).join(" → ")}</div>}
+        {flavorsOf(l).length > 0 && <div style={{ fontSize: 13, color: "var(--mocha)", marginTop: 10 }}>フレーバー：{flavorText(l)}</div>}
         {l.memo && <div style={{ fontSize: 13, color: "var(--bean)", marginTop: 8, fontStyle: "italic", background: "var(--cream)", padding: "8px 12px", borderRadius: 10 }}>“{l.memo}”</div>}
       </Section>
 
@@ -1712,7 +1750,7 @@ function Beans({ beans, saveBeans, logs }) {
 }
 
 // ====== STEP1 豆選択 ======
-function Rec1({ draft, setDraft, beans, saveBeans, setScreen }) {
+function Rec1({ draft, setDraft, beans, saveBeans, setScreen, editing, onSaveDirect }) {
   const [showArchived, setShowArchived] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
   const notify = useContext(ToastCtx);
@@ -1768,7 +1806,15 @@ function Rec1({ draft, setDraft, beans, saveBeans, setScreen }) {
         </div>
       )}
 
-      <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+      {editing ? (
+        // 日記の編集：ここで保存して終えられる。続けてレシピ・味わいメモも直せる
+        <>
+          <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={onSaveDirect}>変更を保存</Btn>
+          <Btn kind="ghost" disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 10 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+        </>
+      ) : (
+        <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+      )}
 
       {quickAdd && <QuickAddBean onClose={() => setQuickAdd(false)} onSave={(bean) => {
         const nb = { ...bean, id: uid(), createdAt: Date.now() };
@@ -2258,7 +2304,7 @@ function DripTimer({ draft, grinders, drippers, onFinish, onExit }) {
   );
 }
 
-function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, setScreen }) {
+function Rec2({ editing, onSaveDirect, draft, setDraft, beans, grinders, saveGrinders, drippers, saveDrippers, favorites, saveFavorites, setScreen }) {
   const beanName = beans.find(b => b.id === draft.beanId)?.name || draft.beanName || "未選択";
   return (
     <div className="cd-fade">
@@ -2270,10 +2316,19 @@ function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDr
       </div>
       <RecipeFields value={draft} setValue={setDraft} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} />
 
-      <Btn onClick={() => setScreen("timer")} style={{ width: "100%", marginBottom: 10, background: "var(--crema)", color: "var(--espresso)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-        <Icon name="brew" size={18} />ドリップスタート
-      </Btn>
-      <Btn style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+      {editing ? (
+        <>
+          <Btn style={{ width: "100%", marginBottom: 10 }} onClick={onSaveDirect}>変更を保存</Btn>
+          <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+        </>
+      ) : (
+        <>
+          <Btn onClick={() => setScreen("timer")} style={{ width: "100%", marginBottom: 10, background: "var(--crema)", color: "var(--espresso)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Icon name="brew" size={18} />ドリップスタート
+          </Btn>
+          <Btn style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+        </>
+      )}
     </div>
   );
 }
@@ -2282,7 +2337,19 @@ function Rec2({ draft, setDraft, beans, grinders, saveGrinders, drippers, saveDr
 function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
   const setTaste = (k, v) => setDraft({ ...draft, taste: { ...draft.taste, [k]: Number(v) } });
   const req = <span style={{ color: "var(--terra)", fontSize: 11, marginLeft: 6 }}>必須</span>;
-  const valid = !!draft.flavorBig && !!draft.flavorSmall;
+  const sel = flavorsOf(draft);
+  // 大分類はタブのように見る分類を切り替えるだけ。細かい香りの欄は、最後に選んだ中分類について開く
+  const [tab, setTab] = useState(() => flavorBigOf(sel[0]?.small) || "");
+  const [focus, setFocus] = useState("");
+  const [maxMsg, setMaxMsg] = useState(false);
+  const setFlavors = (list) => setDraft({ ...draft, flavors: list, flavorBig: flavorBigOf(list[0]?.small) || "", flavorSmall: list[0]?.small || "", flavorDetail: list[0]?.detail || "" });
+  const toggleSmall = (sm) => {
+    setMaxMsg(false);
+    if (sel.some(f => f.small === sm)) { setFlavors(sel.filter(f => f.small !== sm)); if (focus === sm) setFocus(""); return; }
+    if (sel.length >= MAX_FLAVORS) { setMaxMsg(true); return; }
+    setFlavors([...sel, { small: sm, detail: "" }]); setFocus(sm);
+  };
+  const toggleDetail = (sm, d) => setFlavors(sel.map(f => f.small === sm ? { ...f, detail: f.detail === d ? "" : d } : f));
   // datetime-local 用（ローカル時刻の YYYY-MM-DDTHH:mm）
   const dtValue = (() => {
     const d = new Date(draft.createdAt || Date.now());
@@ -2308,20 +2375,38 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
         </div>
       ))}
 
-      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー{req}</div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-        {Object.keys(FLAVOR_TREE).map(b => (
-          <Chip key={b} active={draft.flavorBig === b} onClick={() => setDraft({ ...draft, flavorBig: b, flavorSmall: "" })}>{b}</Chip>
-        ))}
+      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", margin: "20px 0 10px" }}>感じたフレーバー<span style={{ color: "var(--muted)", fontSize: 11, fontWeight: 400, marginLeft: 6 }}>任意</span></div>
+      <div style={{ marginBottom: 10 }}>
+        <ChipRowsWithPanel items={Object.keys(FLAVOR_TREE)} selected={tab}
+          onPick={bg => { setTab(tab === bg ? "" : bg); setFocus(""); }}
+          panel={
+            <div className="cd-fade" style={{ background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 12, padding: "10px" }}>
+              <ChipRowsWithPanel small items={FLAVOR_TREE[tab] || []} selected={focus}
+                isActive={sm => sel.some(f => f.small === sm)}
+                onPick={toggleSmall}
+                panel={FLAVOR_DETAIL[focus] && sel.some(f => f.small === focus) && (
+                  <div className="cd-fade" style={{ background: "var(--cream)", borderRadius: 10, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もっと詳しく（任意）</div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {FLAVOR_DETAIL[focus].map(d => (
+                        <Chip key={d} small active={sel.find(f => f.small === focus)?.detail === d} onClick={() => toggleDetail(focus, d)}>{d}</Chip>
+                      ))}
+                    </div>
+                  </div>
+                )} />
+            </div>
+          } />
       </div>
-      {draft.flavorBig && (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }} className="cd-fade">
-          {FLAVOR_TREE[draft.flavorBig].map(s => (
-            <Chip key={s} small active={draft.flavorSmall === s} onClick={() => setDraft({ ...draft, flavorSmall: s })}>{s}</Chip>
-          ))}
-        </div>
-      )}
-      {draft.flavorBig && !draft.flavorSmall && <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>もう一段、近いものを選んでください</div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 6, minHeight: 30 }}>
+        <span style={{ fontSize: 11.5, color: "var(--muted)" }}>選んだ香り（{MAX_FLAVORS}つまで）</span>
+        {sel.map(f => (
+          <button key={f.small} onClick={() => toggleSmall(f.small)} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12.5, fontWeight: 700, color: "var(--terra)", background: "var(--paper)", border: "1px solid rgba(179,85,47,.35)", borderRadius: 20, padding: "3px 6px 3px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+            {flavorLabel(f)}<span style={{ fontSize: 13, color: "var(--muted)" }}>×</span>
+          </button>
+        ))}
+        {!sel.length && <span style={{ fontSize: 11.5, color: "var(--muted)" }}>— 感じたものがあれば選んでください</span>}
+      </div>
+      {maxMsg && <div style={{ fontSize: 11.5, color: "var(--terra)", marginBottom: 6 }}>香りは{MAX_FLAVORS}つまでです。外してから選んでください。</div>}
 
       <Field label="メモ（気づいたこと）"><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", marginTop: 8 }} value={draft.memo} onChange={e => setDraft({ ...draft, memo: e.target.value })} placeholder="例：後味に少し渋みが残った" /></Field>
 
@@ -2331,15 +2416,46 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
           <button key={s} onClick={() => setDraft({ ...draft, satisfaction: s })} style={{ flex: 1, fontSize: 26, background: "none", border: "none", cursor: "pointer", color: s <= draft.satisfaction ? "var(--crema)" : "var(--line)" }}>★</button>
         ))}
       </div>
-      {!valid && <div style={{ fontSize: 12, color: "var(--terra)", textAlign: "center", marginBottom: 10 }}>「感じたフレーバー」を選ぶと進めます</div>}
-      <Btn disabled={!valid} style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
-      <Btn kind="ghost" disabled={!valid} style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>{editing ? "変更を保存" : "相談せずに記録する"}</Btn>
+      <Btn style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
+      <Btn kind="ghost" style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>{editing ? "変更を保存" : "相談せずに記録する"}</Btn>
     </div>
   );
 }
 
 function Chip({ children, active, onClick, small }) {
   return <button onClick={onClick} style={{ padding: small ? "7px 13px" : "9px 15px", borderRadius: 20, border: "1.5px solid", borderColor: active ? "var(--terra)" : "var(--line)", background: active ? "var(--terra)" : "var(--paper)", color: active ? "#fff" : "var(--mocha)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>{children}</button>;
+}
+// 選んだチップと「同じ行の直下」に次の段階（panel）を差し込んで表示するチップ列。
+// 折り返し位置は画面幅で変わるので、描画後にチップの位置を測って差し込む場所を決める
+function ChipRowsWithPanel({ items, selected, isActive, onPick, small, panel }) {
+  const ref = useRef(null);
+  const [after, setAfter] = useState(-1); // この番号のチップの後ろに差し込む
+  const sel = items.indexOf(selected);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = ref.current;
+      if (!el || sel < 0) { setAfter(-1); return; }
+      const chips = [...el.children].filter(c => c.dataset.chip !== undefined);
+      const top = chips[sel]?.offsetTop;
+      let last = sel;
+      chips.forEach((c, i) => { if (c.offsetTop === top) last = Math.max(last, i); });
+      setAfter(last);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [sel, items.length]);
+  const at = sel < 0 || !panel ? -1 : after >= 0 ? after : items.length - 1;
+  return (
+    <div ref={ref} style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      {items.map((it, i) => (
+        <React.Fragment key={it}>
+          <span data-chip="" style={{ display: "inline-flex" }}><Chip small={small} active={isActive ? isActive(it) : selected === it} onClick={() => onPick(it)}>{it}</Chip></span>
+          {i === at && <div style={{ flexBasis: "100%" }}>{panel}</div>}
+        </React.Fragment>
+      ))}
+    </div>
+  );
 }
 function StepDots({ n }) {
   return <div style={{ display: "flex", gap: 6, marginBottom: 20 }}>{[1, 2, 3].map(i => <div key={i} style={{ height: 4, flex: 1, borderRadius: 4, background: i <= n ? "var(--terra)" : "var(--line)" }} />)}</div>;
@@ -2370,7 +2486,7 @@ function Chat({ draft, setDraft, beans, grinders, drippers, favorites, saveFavor
 ドリッパー: ${dripper?.name || draft.dripperName || "不明"}${dripper?.type ? `（${dripper.type}）` : ""}
 注ぎ: ${pourStr}
 味の評価(1-5): ${TASTE_AXES.map(a => `${a}${t[a]}`).join(" ")}
-フレーバー: ${[draft.flavorBig, draft.flavorSmall].filter(Boolean).join("→") || "未選択"}
+フレーバー: ${flavorsOf(draft).map(f => f.detail ? `${f.small}（${f.detail}）` : f.small).join("・") || "未選択"}
 総合満足度: ${draft.satisfaction}/5
 メモ: ${draft.memo || "なし"}`;
   };
