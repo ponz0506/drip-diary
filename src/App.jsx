@@ -69,7 +69,7 @@ const store = {
 };
 
 // ====== バックアップ（書き出し・復元）======
-const BACKUP_KEYS = ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs", "cd_proposed", "cd_profile"];
+const BACKUP_KEYS = ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs", "cd_proposed", "cd_profile", "cd_bean_suggestions"];
 const downloadJSON = (obj, filename) => {
   const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }));
   const a = document.createElement("a");
@@ -96,6 +96,7 @@ const CHANGE_NOUNS = { cd_logs: "記録", cd_beans: "豆", cd_favorites: "定番
 const describeChange = (key, before, after, nameOfBean) => {
   if (key === "cd_proposed") return [{ text: "次の一杯の提案を更新", minor: true }];
   if (key === "cd_profile") return [{ text: "プロフィールを編集", minor: true }];
+  if (key === "cd_bean_suggestions") return [{ text: "次に試したい豆を提案" }];
   const noun = CHANGE_NOUNS[key];
   if (!noun) return [];
   const label = (x) => key === "cd_logs"
@@ -300,6 +301,7 @@ export default function App() {
   const [favorites, setFavorites] = useState([]);
   const [logs, setLogs] = useState([]);
   const [proposed, setProposed] = useState(null);
+  const [suggestions, setSuggestions] = useState([]); // 次に試したい豆の提案（新しい順）
   const [draft, setDraft] = useState(null);
   const [detailId, setDetailId] = useState(null);
   const [detailFrom, setDetailFrom] = useState("home");
@@ -325,7 +327,7 @@ export default function App() {
       if (!s) {
         _ready = false;
         setLoaded(false); setLoadError(false);
-        setBeans([]); setGrinders([]); setDrippers([]); setFavorites([]); setLogs([]); setProposed(null); setProfile(null);
+        setBeans([]); setGrinders([]); setDrippers([]); setFavorites([]); setLogs([]); setProposed(null); setProfile(null); setSuggestions([]);
       }
     });
     return () => sub.subscription.unsubscribe();
@@ -344,7 +346,7 @@ export default function App() {
         // ログインが有効かをサーバーに確認してから読む（無効なトークンだとRLSでエラーなしの「0件」が返り、新規ユーザーと誤認するため）
         const { data: u, error: ue } = await supabase.auth.getUser();
         if (ue || u?.user?.id !== userId) throw ue || new Error("auth mismatch");
-        const keys = ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs", "cd_proposed", "cd_profile"];
+        const keys = BACKUP_KEYS;
         const r = Object.fromEntries(await Promise.all(keys.map(async k => [k, await store.load(k)])));
         if (cancelled) return;
         // 初期データは「本当に初めてのユーザー」（どのデータも一度も保存されていない）にだけ入れる
@@ -358,6 +360,7 @@ export default function App() {
         if (cancelled) return;
         setBeans(b || []); setGrinders(g || []); setDrippers(d || []);
         setFavorites(r.cd_favorites.value || []); setLogs(r.cd_logs.value || []); setProposed(r.cd_proposed.value ?? null); setProfile(pf);
+        setSuggestions(r.cd_bean_suggestions.value || []);
         _ready = true;
         setLoaded(true);
       } catch (e) {
@@ -375,18 +378,19 @@ export default function App() {
   const saveFavorites = (f) => { setFavorites(f); store.set("cd_favorites", f); };
   const saveLogs = (l) => { setLogs(l); store.set("cd_logs", l); };
   const saveProposed = (p) => { setProposed(p); store.set("cd_proposed", p); };
+  const saveSuggestions = (x) => { setSuggestions(x); store.set("cd_bean_suggestions", x); };
 
   // バックアップ：今のデータを1つのオブジェクトに / ファイルの中身で全データを置き換え
   const makeBackup = () => ({
     app: "drip-diary", version: 1, exportedAt: new Date().toISOString(),
-    data: { cd_beans: beans, cd_grinders: grinders, cd_drippers: drippers, cd_favorites: favorites, cd_logs: logs, cd_proposed: proposed, cd_profile: profile },
+    data: { cd_beans: beans, cd_grinders: grinders, cd_drippers: drippers, cd_favorites: favorites, cd_logs: logs, cd_proposed: proposed, cd_profile: profile, cd_bean_suggestions: suggestions },
   });
   const restoreBackup = async (backup) => {
     const d = backup.data;
-    const next = { cd_beans: d.cd_beans, cd_grinders: d.cd_grinders, cd_drippers: d.cd_drippers, cd_favorites: d.cd_favorites, cd_logs: d.cd_logs, cd_proposed: d.cd_proposed ?? null, cd_profile: d.cd_profile || profile };
+    const next = { cd_beans: d.cd_beans, cd_grinders: d.cd_grinders, cd_drippers: d.cd_drippers, cd_favorites: d.cd_favorites, cd_logs: d.cd_logs, cd_proposed: d.cd_proposed ?? null, cd_profile: d.cd_profile || profile, cd_bean_suggestions: d.cd_bean_suggestions || [] };
     const results = await Promise.all(BACKUP_KEYS.map(k => store.set(k, next[k])));
     setBeans(next.cd_beans); setGrinders(next.cd_grinders); setDrippers(next.cd_drippers); setFavorites(next.cd_favorites);
-    setLogs(next.cd_logs); setProposed(next.cd_proposed); setProfile(next.cd_profile);
+    setLogs(next.cd_logs); setProposed(next.cd_proposed); setProfile(next.cd_profile); setSuggestions(next.cd_bean_suggestions);
     return results.every(Boolean);
   };
 
@@ -506,7 +510,7 @@ export default function App() {
         {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
-        {screen === "profile" && <Profile makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
+        {screen === "profile" && <Profile suggestions={suggestions} saveSuggestions={saveSuggestions} makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
@@ -1131,6 +1135,111 @@ function TasteProfile({ logs, beans }) {
         </>
       )}
 
+    </div>
+  );
+}
+
+// ====== 次に試したい豆（段階2：好みプロフィールからAIが豆のタイプを提案）======
+// AIには集計済みのプロフィールだけを渡す（生の記録は渡さない）。数えるのはアプリ、解釈と提案はAI
+const profileToPrompt = (prof) => {
+  const dimLine = (key) => {
+    const d = prof.dims[key];
+    if (!d.groups.length) return null;
+    return `${d.label}: ` + d.groups.map(g => `${g.value}（${g.cupCount}杯${g.avg != null ? `・平均${g.avg.toFixed(1)}★` : ""}${g.rebuyAnswered ? `・また買いたい${g.rebuy.yes}/${g.rebuyAnswered}袋` : ""}）`).join("、");
+  };
+  return [
+    `記録: ${prof.cupCount}杯・${prof.beanCount}袋`,
+    ...["roast", "origin", "process", "variety"].map(dimLine),
+    prof.taste.length ? `高評価のときの味: ${prof.taste.map(t => `${t.ax}${t.d > 0 ? "高め" : "控えめ"}`).join("・")}` : null,
+    prof.likedFlavors.length ? `好きな香り: ${prof.likedFlavors.map(f => f.flavor).join("・")}` : null,
+    prof.dislikedFlavors.length ? `苦手な香り: ${prof.dislikedFlavors.map(f => f.flavor).join("・")}` : null,
+    prof.rebuyYes.length ? `また買いたい豆: ${prof.rebuyYes.join("、")}` : null,
+    prof.rebuyNo.length ? `もう買わない豆: ${prof.rebuyNo.join("、")}` : null,
+  ].filter(Boolean).join("\n");
+};
+// 提案の種類：match＝好みに近い / discover＝新しい発見（以前の保存データの「定番」「冒険」も同じ扱い）
+const SUGGEST_TYPES = { match: "好みに近い", discover: "新しい発見", 定番: "好みに近い", 冒険: "新しい発見" };
+const SUGGEST_SYSTEM =
+  "あなたはスペシャルティコーヒー豆の買い付けと販売に詳しいバリスタです。利用者の好みの記録をもとに、次に買って試す豆の「タイプ」を2つ提案します。\n" +
+  "・1つ目は「好みに近い」豆：今の好みの延長で、満足する可能性が高いもの。\n" +
+  "・2つ目は「新しい発見」の豆：好みと共通する要素を1つ以上残しつつ、まだ試していない産地・精製・焙煎度のどれかに踏み出すもの。\n" +
+  "・特定の商品名や店名は出さない。産地（国、必要なら地域）・精製方法・焙煎度の組み合わせで答える。\n" +
+  "・焙煎度は「浅煎り」「中浅煎り」「中煎り」「中深煎り」「深煎り」のどれか。\n" +
+  "・苦手な香りや「もう買わない豆」の傾向は避ける。記録が少ない項目は決めつけず、一般的な知識で補う。\n" +
+  "前後の説明やマークダウンは付けず、次のJSONオブジェクトだけを返す:\n" +
+  '{"summary":"利用者の好みをひとことで（25字以内）","items":[{"type":"match","origin":"産地","process":"精製方法","roastLevel":"焙煎度","flavors":["期待できる香り（最大3つ）"],"reason":"好みのどこに合うか（50字以内）"},{"type":"discover", 同じ形 }]}';
+
+async function requestBeanSuggestion(prof) {
+  const { data, error } = await supabase.functions.invoke("ai", {
+    body: { system: SUGGEST_SYSTEM, messages: [{ role: "user", content: `【好みの記録】\n${profileToPrompt(prof)}\n\n次に試す豆のタイプを2つ、JSONで。` }], maxTokens: 900, json: true, temperature: 0.7 },
+  });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  let txt = (data?.text || "").replace(/```json|```/g, "").trim();
+  const m = txt.match(/\{[\s\S]*\}/);
+  if (m) txt = m[0];
+  const r = JSON.parse(txt);
+  const items = (Array.isArray(r.items) ? r.items : []).slice(0, 2).map((x, i) => ({
+    type: i === 0 ? "match" : "discover",
+    origin: String(x.origin || "").trim(),
+    process: normalizeProcess(x.process),
+    roastLevel: ROAST_LEVELS.includes(x.roastLevel) ? x.roastLevel : "",
+    flavors: (Array.isArray(x.flavors) ? x.flavors : []).map(String).slice(0, 3),
+    reason: String(x.reason || "").trim(),
+  })).filter(x => x.origin || x.process || x.roastLevel);
+  if (!items.length) throw new Error("提案を読み取れませんでした");
+  return { id: uid(), createdAt: Date.now(), summary: String(r.summary || "").trim(), items, basis: { cups: prof.cupCount, beans: prof.beanCount } };
+}
+
+function NextBeanCard({ logs, beans, suggestions, saveSuggestions }) {
+  const notify = useContext(ToastCtx);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const prof = buildPreferenceProfile(logs, beans);
+  // 提案の材料が少なすぎるときは控える（3杯・2袋が目安）
+  const enough = prof.cupCount >= 3 && prof.beanCount >= 2;
+  const latest = (suggestions || [])[0];
+  const ask = async () => {
+    setLoading(true); setErr("");
+    try {
+      const s = await requestBeanSuggestion(prof);
+      saveSuggestions([s, ...(suggestions || [])].slice(0, 30)); // 提案は履歴として残す（あとで当たったかを確かめるため）
+      notify("次に試したい豆を提案しました");
+    } catch { setErr("提案を作れませんでした。時間をおいて、もう一度お試しください。"); }
+    setLoading(false);
+  };
+  const card = { background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: 16, marginBottom: 24 };
+  return (
+    <div style={card}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)" }}>次に試したい豆</div>
+        {latest && <div style={{ fontSize: 11, color: "var(--muted)" }}>{new Date(latest.createdAt).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}の提案</div>}
+      </div>
+      {!latest && <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>あなたの好みから、次に買う豆のタイプ（産地・精製・焙煎度）をAIが提案します。</div>}
+      {latest && (
+        <>
+          {latest.summary && <div style={{ fontSize: 12.5, color: "var(--bean)", margin: "4px 0 12px" }}>{latest.summary}</div>}
+          {latest.items.map((it, i) => (
+            <div key={i} style={{ background: "var(--cream)", borderRadius: 12, padding: "12px 14px", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: "#fff", background: SUGGEST_TYPES[it.type] === "好みに近い" ? "var(--terra)" : "var(--mocha)", borderRadius: 10, padding: "2px 9px", flexShrink: 0 }}>{SUGGEST_TYPES[it.type] || it.type}</span>
+                <span className="cd-serif" style={{ fontSize: 14.5, fontWeight: 700, color: "var(--espresso)" }}>{[it.origin, it.process, it.roastLevel].filter(Boolean).join(" · ")}</span>
+              </div>
+              {it.flavors.length > 0 && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
+                  {it.flavors.map(f => <span key={f} style={{ fontSize: 11.5, fontWeight: 700, color: "var(--terra)", background: "var(--paper)", border: "1px solid rgba(179,85,47,.3)", borderRadius: 20, padding: "1px 9px" }}>{f}</span>)}
+                </div>
+              )}
+              {it.reason && <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.7 }}>{it.reason}</div>}
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>香りや説明はAIによる一般的な傾向です。実際の風味は、地域・農園・焙煎によって豆ごとに異なります。</div>
+        </>
+      )}
+      {err && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{err}</div>}
+      {enough
+        ? <Btn kind={latest ? "ghost" : "primary"} disabled={loading} onClick={ask} style={{ width: "100%", padding: "11px" }}>{loading ? "考え中…" : latest ? "もう一度提案してもらう" : "提案してもらう"}</Btn>
+        : <div style={{ fontSize: 12, color: "var(--muted)", background: "var(--cream)", borderRadius: 10, padding: "10px 12px", lineHeight: 1.7 }}>2種類以上の豆で3杯以上記録すると、提案できるようになります（現在 {prof.beanCount}袋・{prof.cupCount}杯）。</div>}
     </div>
   );
 }
@@ -2597,7 +2706,7 @@ function Auth() {
 }
 
 // ====== プロフィール ======
-function Profile({ makeBackup, restoreBackup, profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
+function Profile({ suggestions, saveSuggestions, makeBackup, restoreBackup, profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
   const [editOpen, setEditOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const notify = useContext(ToastCtx);
@@ -2641,6 +2750,7 @@ function Profile({ makeBackup, restoreBackup, profile, saveProfile, logs, beans,
       </div>
 
       <TasteProfile logs={logs} beans={beans} />
+      <NextBeanCard logs={logs} beans={beans} suggestions={suggestions} saveSuggestions={saveSuggestions} />
 
       {/* 設定への導線（控えめ） */}
       <button onClick={() => setSettingsOpen(true)} style={{ width: "100%", background: "var(--paper)", border: "1px solid var(--line)", borderRadius: 14, padding: "15px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>
