@@ -89,49 +89,62 @@ const validateBackup = (obj) => {
   return null;
 };
 
-// 今のデータ（now）を別のデータ（then）に置き換えたら何が起きるかを、種類ごとに要約する
-// 消える＝今あって置き換え後に無い / 戻る＝今無くて置き換え後にある / 変わる＝両方にあるが内容が違う
-const summarizeRestore = (now, then) => {
-  const beanName = (id) => [...(now.cd_beans || []), ...(then.cd_beans || [])].find(b => b.id === id)?.name;
-  const logLabel = (l) => `${new Date(l.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} ${beanName(l.beanId) || l.beanName || "不明な豆"} ★${l.satisfaction ?? "-"}`;
-  const lists = [
-    { key: "cd_logs", label: "記録", name: logLabel },
-    { key: "cd_beans", label: "豆", name: x => x.name },
-    { key: "cd_favorites", label: "定番レシピ", name: x => x.name },
-    { key: "cd_grinders", label: "ミル", name: x => x.name },
-    { key: "cd_drippers", label: "ドリッパー", name: x => x.name },
-  ];
-  const rows = [], same = [];
-  lists.forEach(({ key, label, name }) => {
-    const a = now[key] || [], b = then[key] || [];
-    const am = new Map(a.map(x => [x.id, x])), bm = new Map(b.map(x => [x.id, x]));
-    const gone = a.filter(x => !bm.has(x.id)), back = b.filter(x => !am.has(x.id));
-    const changed = b.filter(x => am.has(x.id) && JSON.stringify(am.get(x.id)) !== JSON.stringify(x));
-    if (!gone.length && !back.length && !changed.length) { same.push(label); return; }
-    rows.push({ label, parts: [["消える", gone], ["戻る", back], ["内容が変わる", changed]].filter(([, xs]) => xs.length).map(([kind, xs]) => ({ kind, count: xs.length, names: xs.slice(0, 3).map(name), more: Math.max(0, xs.length - 3) })) });
+// ====== 変更履歴（user_data_history、DBのトリガーが自動で記録）======
+// 履歴の各行は「その変更で上書きされる前の値」。次の行（または現在の値）と比べると、何をした変更かが分かる
+const CHANGE_NOUNS = { cd_logs: "記録", cd_beans: "豆", cd_favorites: "定番レシピ", cd_grinders: "ミル", cd_drippers: "ドリッパー" };
+// 1つのキーの「変更前→変更後」から、「記録を追加」「豆を編集」のような説明を作る
+const describeChange = (key, before, after, nameOfBean) => {
+  if (key === "cd_proposed") return [{ text: "次の一杯の提案を更新", minor: true }];
+  if (key === "cd_profile") return [{ text: "プロフィールを編集", minor: true }];
+  const noun = CHANGE_NOUNS[key];
+  if (!noun) return [];
+  const label = (x) => key === "cd_logs"
+    ? `${new Date(x.createdAt).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} ${nameOfBean(x.beanId) || x.beanName || "不明な豆"} ★${x.satisfaction ?? "-"}`
+    : x.name;
+  const a = Array.isArray(before) ? before : [], b = Array.isArray(after) ? after : [];
+  const am = new Map(a.map(x => [x.id, x])), bm = new Map(b.map(x => [x.id, x]));
+  const out = [];
+  b.filter(x => !am.has(x.id)).forEach(x => out.push({ text: `${noun}を追加`, sub: label(x) }));
+  a.filter(x => !bm.has(x.id)).forEach(x => out.push({ text: `${noun}を削除`, sub: label(x) }));
+  b.filter(x => am.has(x.id) && JSON.stringify(am.get(x.id)) !== JSON.stringify(x)).forEach(x => {
+    const o = am.get(x.id);
+    const verb = key === "cd_beans" && !o.archived && x.archived ? "アーカイブ" : key === "cd_beans" && o.archived && !x.archived ? "使用中に戻す" : "編集";
+    out.push({ text: `${noun}を${verb}`, sub: label(x) });
   });
-  const others = [["cd_proposed", "次の一杯の提案"], ["cd_profile", "プロフィール"]].filter(([k]) => JSON.stringify(now[k] ?? null) !== JSON.stringify(then[k] ?? null)).map(([, l]) => l);
-  return { rows, same, others, identical: !rows.length && !others.length };
+  // 同じ種類の変更が複数あるときは1行にまとめる（例：記録を追加（3件））
+  const merged = [];
+  out.forEach(c => {
+    const m = merged.find(x => x.text === c.text);
+    if (m) { m.count++; if (m.subs.length < 2) m.subs.push(c.sub); } else merged.push({ text: c.text, count: 1, subs: [c.sub] });
+  });
+  return merged.map(m => ({ text: m.count > 1 ? `${m.text}（${m.count}件）` : m.text, sub: m.subs.join("、") + (m.count > 2 ? " ほか" : "") }));
 };
-
-// ====== サーバー側の変更履歴（user_data_history、DBのトリガーが自動で記録）======
-const KEY_LABELS = { cd_beans: "豆", cd_grinders: "ミル", cd_drippers: "ドリッパー", cd_favorites: "定番レシピ", cd_logs: "記録", cd_proposed: "次の一杯", cd_profile: "プロフィール" };
 const serverHistory = {
-  // 戻せる時点の一覧（新しい順）。1分以内の連続した変更は1つの時点にまとめる
-  async points() {
-    const { data, error } = await supabase.from("user_data_history").select("key, changed_at").order("changed_at", { ascending: false }).limit(300);
+  // 変更の一覧（新しい順）。1分以内に続けて保存されたもの（例：記録と次の一杯）は1つの変更にまとめる
+  async changes(current) {
+    const { data, error } = await supabase.from("user_data_history").select("key, value, changed_at").order("changed_at", { ascending: false }).limit(150);
     if (error) throw error;
-    const pts = [];
-    (data || []).forEach(r => {
+    const rows = data || [];
+    // 豆の名前は、現在と履歴に出てくる豆から探す
+    const beanPool = [...(current.cd_beans || []), ...rows.filter(r => r.key === "cd_beans").flatMap(r => Array.isArray(r.value) ? r.value : [])];
+    const nameOfBean = (id) => beanPool.find(b => b.id === id)?.name;
+    const groups = [];
+    rows.forEach((r, i) => {
+      // 変更後の値＝同じキーで1つ新しい履歴の値（無ければ現在の値）
+      const newer = rows.slice(0, i).reverse().find(x => x.key === r.key);
+      const items = describeChange(r.key, r.value, newer ? newer.value : current[r.key], nameOfBean);
       const t = new Date(r.changed_at).getTime();
-      const last = pts[pts.length - 1];
-      if (last && last.at - t < 60000) { last.at = t; last.keys.add(r.key); }
-      else pts.push({ at: t, keys: new Set([r.key]) });
+      const last = groups[groups.length - 1];
+      if (last && last.at - t < 60000) { last.at = t; last.items.unshift(...items); }
+      else groups.push({ at: t, items });
     });
-    return pts.map(x => ({ at: x.at, keys: BACKUP_KEYS.filter(k => x.keys.has(k)) }));
+    // 主な変更があるときは「次の一杯の提案を更新」などの付随的な変更は表示しない
+    return groups.map(g => {
+      const major = g.items.filter(x => !x.minor);
+      return { at: g.at, items: major.length ? major : g.items };
+    }).filter(g => g.items.length);
   },
-  // 時点 at の「直前」の全データ。履歴には上書き前の値が入っているので、
-  // 各キーについて at 以降で最初の履歴を使い、無ければ（その後変わっていない）現在の値を使う
+  // 時点 at の「直前」の全データ。各キーについて at 以降で最初の履歴（＝その変更の前の値）、無ければ現在の値
   async stateBefore(at, current) {
     const iso = new Date(at).toISOString();
     const out = {};
@@ -2690,17 +2703,18 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
   const notify = useContext(ToastCtx);
   const fileRef = useRef(null);
   const [pending, setPending] = useState(null); // 読み込んだバックアップ（確認待ち）
-  const [points, setPoints] = useState(null); // サーバー履歴の時点一覧
+  const [changes, setChanges] = useState(null); // 変更履歴（新しい順）
   const openHistory = async () => {
-    setMode("history"); setPoints(null); setRestoreMsg("");
-    try { setPoints(await serverHistory.points()); }
-    catch { setPoints([]); setRestoreMsg("自動バックアップを読み込めませんでした。サーバー側の設定が済んでいないか、通信に失敗しています。"); }
+    setMode("history"); setChanges(null); setRestoreMsg("");
+    try { setChanges(await serverHistory.changes(makeBackup().data)); }
+    catch { setChanges([]); setRestoreMsg("変更履歴を読み込めませんでした。サーバー側の設定が済んでいないか、通信に失敗しています。"); }
   };
-  const pickPoint = async (pt) => {
+  // 選んだ変更より前に戻す：その変更以降の変更（＝取り消されるもの）を確認画面に出す
+  const pickChange = async (g) => {
     setBusy(true); setRestoreMsg("");
     try {
-      const data = await serverHistory.stateBefore(pt.at, makeBackup().data);
-      setPending({ app: "drip-diary", version: 1, exportedAt: new Date(pt.at).toISOString(), data, fromHistory: true });
+      const data = await serverHistory.stateBefore(g.at, makeBackup().data);
+      setPending({ app: "drip-diary", version: 1, data, fromHistory: true, at: g.at, undone: changes.filter(x => x.at >= g.at) });
       setMode("restore");
     } catch { setRestoreMsg("この時点のデータを読み込めませんでした。"); }
     setBusy(false);
@@ -2734,9 +2748,10 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
     if (!pending.fromHistory) downloadJSON(makeBackup(), backupFileName("-before-restore"));
     const ok = await restoreBackup(pending);
     setBusy(false);
-    if (ok) { notify(pending.fromHistory ? "選んだ時点に戻しました" : "バックアップから復元しました"); setPending(null); setMode(null); }
+    if (ok) { notify(pending.fromHistory ? "元に戻しました" : "ファイルから復元しました"); setPending(null); setMode(null); }
     else setRestoreMsg("一部のデータを保存できませんでした。通信状態を確認して、もう一度お試しください。");
   };
+  const fmtShort = (t) => new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
   const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
   const [newEmail, setNewEmail] = useState("");
   const [newPw, setNewPw] = useState("");
@@ -2823,8 +2838,8 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
       {mode === null && (
         <>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データ</div>
-          {row("過去の状態に戻す", "自動バックアップ", openHistory)}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>データは変更のたびに、変更前の状態がサーバーへ自動で保存されています（直近7日はすべて、90日前までは1日1つ）。</div>
+          {row("変更履歴", "以前の状態に戻す", openHistory)}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>変更のたびに、サーバーへ自動でバックアップされます（直近7日はすべて、90日前までは1日1つ）。</div>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "18px 0 4px", letterSpacing: ".04em" }}>ファイル（手元に保存したいとき）</div>
           {row("ファイルに書き出す", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}` : "", exportNow)}
           {row("ファイルから復元", "ファイルを選ぶ", () => fileRef.current?.click())}
@@ -2835,14 +2850,14 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
 
       {mode === "history" && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>どの時点に戻しますか？</div>
-          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>選んだ変更が行われる「直前」の状態に戻します。戻す前に内容を確認できます。</div>
-          {points === null && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>読み込み中…</div>}
-          {points && points.length === 0 && !restoreMsg && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>まだ自動バックアップはありません。データを変更すると、変更前の状態がここに並びます。</div>}
-          {points && points.slice(0, 60).map(pt => (
-            <button key={pt.at} disabled={busy} onClick={() => pickPoint(pt)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy ? "default" : "pointer", fontFamily: "inherit" }}>
-              <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--espresso)" }}>{fmtDate(pt.at)} の直前</div>
-              <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>{pt.keys.map(k => KEY_LABELS[k] || k).join("・")}が変更される前</div>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 4 }}>変更履歴</div>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginBottom: 10, lineHeight: 1.7 }}>選んだ変更より前の状態に戻せます。</div>
+          {changes === null && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>読み込み中…</div>}
+          {changes && changes.length === 0 && !restoreMsg && <div style={{ fontSize: 12.5, color: "var(--muted)", padding: "10px 0" }}>まだ変更履歴はありません。</div>}
+          {changes && changes.slice(0, 60).map(g => (
+            <button key={g.at} disabled={busy} onClick={() => pickChange(g)} style={{ width: "100%", textAlign: "left", background: "var(--paper)", border: "none", borderRadius: 12, padding: "10px 14px", marginBottom: 6, cursor: busy ? "default" : "pointer", fontFamily: "inherit", display: "flex", gap: 12 }}>
+              <span style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, width: 72, paddingTop: 1 }}>{fmtShort(g.at)}</span>
+              <ChangeLines items={g.items} />
             </button>
           ))}
           {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", margin: "8px 0", lineHeight: 1.7 }}>{restoreMsg}</div>}
@@ -2850,42 +2865,37 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
         </div>
       )}
 
-      {mode === "restore" && pending && (
+      {mode === "restore" && pending && pending.fromHistory && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>{pending.fromHistory ? "この時点に戻しますか？" : "このバックアップで復元しますか？"}</div>
-          <div style={{ background: "var(--paper)", borderRadius: 12, padding: "8px 14px", fontSize: 12.5, lineHeight: 1.9, marginBottom: 12 }}>
-            <div>{pending.fromHistory ? "時点" : "書き出した日時"}：<b>{fmtDate(pending.exportedAt)}</b>{pending.fromHistory ? " の直前" : ""}</div>
-          </div>
-          {(() => {
-            const sm = summarizeRestore(makeBackup().data, pending.data);
-            if (sm.identical) return <div style={{ fontSize: 12.5, color: "var(--muted)", marginBottom: 12 }}>今のデータと同じ内容です。戻す必要はありません。</div>;
-            return (
-              <div style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--mocha)", marginBottom: 6 }}>戻すと、こう変わります</div>
-                {sm.rows.map(r => (
-                  <div key={r.label} style={{ display: "grid", gridTemplateColumns: "64px 1fr", gap: 8, padding: "7px 0", borderBottom: "1px dotted var(--line)" }}>
-                    <span style={{ fontSize: 12.5, fontWeight: 700 }}>{r.label}</span>
-                    <span>
-                      {r.parts.map(pt => (
-                        <div key={pt.kind} style={{ fontSize: 12, lineHeight: 1.7, marginBottom: 2 }}>
-                          <b style={{ color: pt.kind === "消える" ? "var(--danger)" : pt.kind === "戻る" ? "var(--terra)" : "var(--mocha)" }}>{pt.kind} {pt.count}件</b>
-                          {pt.names.map(n => <div key={n} style={{ color: "var(--bean)", paddingLeft: 8 }}>・{n}</div>)}
-                          {pt.more > 0 && <div style={{ color: "var(--muted)", paddingLeft: 8 }}>ほか {pt.more}件</div>}
-                        </div>
-                      ))}
-                    </span>
-                  </div>
-                ))}
-                {sm.others.length > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 6 }}>{sm.others.join("・")}も、この時点の内容に戻ります。</div>}
-                {sm.same.length > 0 && <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 4 }}>変わらないもの：{sm.same.join("・")}</div>}
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>{fmtShort(pending.at)} より前に戻しますか？</div>
+          <div style={{ fontSize: 12.5, color: "var(--mocha)", marginBottom: 6 }}>次の変更が取り消されます（{pending.undone.length}件）</div>
+          <div style={{ background: "var(--paper)", borderRadius: 12, padding: "6px 14px", marginBottom: 10 }}>
+            {pending.undone.slice(0, 5).map(g => (
+              <div key={g.at} style={{ display: "flex", gap: 12, padding: "6px 0", borderBottom: "1px dotted var(--line)" }}>
+                <span style={{ fontSize: 12, color: "var(--muted)", flexShrink: 0, width: 72, paddingTop: 1 }}>{fmtShort(g.at)}</span>
+                <ChangeLines items={g.items} />
               </div>
-            );
-          })()}
-          <div style={{ fontSize: 12, color: "var(--terra)", lineHeight: 1.7, marginBottom: 12 }}>{pending.fromHistory ? "今のデータはすべて、この時点の内容に置き換わります。戻したあとも、同じ画面から今の状態に戻せます。" : "今のデータはすべて、このバックアップの内容に置き換わります。念のため、置き換える前に今のデータを自動で書き出します。"}</div>
+            ))}
+            {pending.undone.length > 5 && <div style={{ fontSize: 12, color: "var(--muted)", padding: "6px 0" }}>ほか {pending.undone.length - 5}件</div>}
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>元に戻したあとも、変更履歴から取り消せます。</div>
           {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
           <div style={{ display: "flex", gap: 10 }}>
-            <Btn kind="ghost" onClick={() => { const back = pending.fromHistory; setPending(null); setRestoreMsg(""); if (back) setMode("history"); else setMode(null); }} style={{ flex: 1 }}>キャンセル</Btn>
-            <Btn disabled={busy || summarizeRestore(makeBackup().data, pending.data).identical} onClick={doRestore} style={{ flex: 2 }}>{busy ? "復元中…" : pending.fromHistory ? "この時点に戻す" : "復元する"}</Btn>
+            <Btn kind="ghost" onClick={() => { setPending(null); setRestoreMsg(""); setMode("history"); }} style={{ flex: 1 }}>キャンセル</Btn>
+            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "処理中…" : "元に戻す"}</Btn>
+          </div>
+        </div>
+      )}
+
+      {mode === "restore" && pending && !pending.fromHistory && (
+        <div className="cd-fade" style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>このファイルの内容に復元しますか？</div>
+          <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.8, marginBottom: 10 }}>書き出した日時：{fmtDate(pending.exportedAt)}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>現在のデータは上書きされます。復元の前に、現在のデータを自動でファイルに書き出します。</div>
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn kind="ghost" onClick={() => { setPending(null); setRestoreMsg(""); setMode(null); }} style={{ flex: 1 }}>キャンセル</Btn>
+            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "処理中…" : "復元"}</Btn>
           </div>
         </div>
       )}
@@ -2897,6 +2907,20 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
         </div>
       )}
     </ModalShell>
+  );
+}
+
+// 変更履歴の1件分（「記録を追加」＋対象の名前）
+function ChangeLines({ items }) {
+  return (
+    <span style={{ flex: 1, minWidth: 0 }}>
+      {items.map((c, i) => (
+        <div key={i} style={{ marginBottom: i < items.length - 1 ? 4 : 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--espresso)" }}>{c.text}</div>
+          {c.sub && <div style={{ fontSize: 11.5, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.sub}</div>}
+        </div>
+      ))}
+    </span>
   );
 }
 
