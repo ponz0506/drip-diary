@@ -1807,10 +1807,10 @@ function Rec1({ draft, setDraft, beans, saveBeans, setScreen, editing, onSaveDir
       )}
 
       {editing ? (
-        // 日記の編集：ここで保存して終えられる。続けてレシピ・味わいメモも直せる
+        // 日記の編集：どのページでも「次へ」（枠線）が上、「変更を保存」（メイン色）が一番下
         <>
-          <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={onSaveDirect}>変更を保存</Btn>
-          <Btn kind="ghost" disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 10 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+          <Btn kind="ghost" disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
+          <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>変更を保存</Btn>
         </>
       ) : (
         <Btn disabled={!draft.beanId && !draft.beanName?.trim()} style={{ width: "100%", marginTop: 6 }} onClick={() => setScreen("rec2")}>次へ：レシピ</Btn>
@@ -2318,8 +2318,8 @@ function Rec2({ editing, onSaveDirect, draft, setDraft, beans, grinders, saveGri
 
       {editing ? (
         <>
-          <Btn style={{ width: "100%", marginBottom: 10 }} onClick={onSaveDirect}>変更を保存</Btn>
-          <Btn kind="ghost" style={{ width: "100%" }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+          <Btn kind="ghost" style={{ width: "100%", marginBottom: 10 }} onClick={() => setScreen("rec3")}>次へ：味わいメモ</Btn>
+          <Btn style={{ width: "100%" }} onClick={onSaveDirect}>変更を保存</Btn>
         </>
       ) : (
         <>
@@ -2416,8 +2416,14 @@ function Rec3({ draft, setDraft, setScreen, editing, onSaveDirect }) {
           <button key={s} onClick={() => setDraft({ ...draft, satisfaction: s })} style={{ flex: 1, fontSize: 26, background: "none", border: "none", cursor: "pointer", color: s <= draft.satisfaction ? "var(--crema)" : "var(--line)" }}>★</button>
         ))}
       </div>
-      <Btn style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
-      <Btn kind="ghost" style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>{editing ? "変更を保存" : "相談せずに記録する"}</Btn>
+      {editing ? (
+        <Btn style={{ width: "100%" }} onClick={onSaveDirect}>変更を保存</Btn>
+      ) : (
+        <>
+          <Btn style={{ width: "100%" }} onClick={() => setScreen("chat")}>AIに相談する →</Btn>
+          <Btn kind="ghost" style={{ width: "100%", marginTop: 10 }} onClick={onSaveDirect}>相談せずに記録する</Btn>
+        </>
+      )}
     </div>
   );
 }
