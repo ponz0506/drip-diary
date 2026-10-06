@@ -58,12 +58,35 @@ const store = {
     if (error) throw error;
     return data ? { exists: true, value: data.value } : { exists: false, value: undefined };
   },
+  // 保存できたら true（通常の保存は結果を見ないが、バックアップからの復元では確認する）
   async set(k, v, { force = false } = {}) {
     try {
-      if (!_uid || (!_ready && !force)) return;
-      await supabase.from("user_data").upsert({ user_id: _uid, key: k, value: v });
-    } catch (e) { /* 通信エラー等 */ }
+      if (!_uid || (!_ready && !force)) return false;
+      const { error } = await supabase.from("user_data").upsert({ user_id: _uid, key: k, value: v });
+      return !error;
+    } catch (e) { return false; /* 通信エラー等 */ }
   },
+};
+
+// ====== バックアップ（書き出し・復元）======
+const BACKUP_KEYS = ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs", "cd_proposed", "cd_profile"];
+const downloadJSON = (obj, filename) => {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+const backupFileName = (suffix = "") => {
+  const d = new Date(), p = (n) => String(n).padStart(2, "0");
+  return `drip-diary-backup-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${suffix}.json`;
+};
+// 読み込んだファイルがこのアプリのバックアップかを確認する
+const validateBackup = (obj) => {
+  if (!obj || obj.app !== "drip-diary" || !obj.data) return "Drip Diary のバックアップファイルではありません。";
+  const d = obj.data;
+  for (const k of ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs"]) if (!Array.isArray(d[k])) return "ファイルの中身が壊れているようです。";
+  return null;
 };
 
 const SEED_BEAN = {
@@ -284,6 +307,20 @@ export default function App() {
   const saveLogs = (l) => { setLogs(l); store.set("cd_logs", l); };
   const saveProposed = (p) => { setProposed(p); store.set("cd_proposed", p); };
 
+  // バックアップ：今のデータを1つのオブジェクトに / ファイルの中身で全データを置き換え
+  const makeBackup = () => ({
+    app: "drip-diary", version: 1, exportedAt: new Date().toISOString(),
+    data: { cd_beans: beans, cd_grinders: grinders, cd_drippers: drippers, cd_favorites: favorites, cd_logs: logs, cd_proposed: proposed, cd_profile: profile },
+  });
+  const restoreBackup = async (backup) => {
+    const d = backup.data;
+    const next = { cd_beans: d.cd_beans, cd_grinders: d.cd_grinders, cd_drippers: d.cd_drippers, cd_favorites: d.cd_favorites, cd_logs: d.cd_logs, cd_proposed: d.cd_proposed ?? null, cd_profile: d.cd_profile || profile };
+    const results = await Promise.all(BACKUP_KEYS.map(k => store.set(k, next[k])));
+    setBeans(next.cd_beans); setGrinders(next.cd_grinders); setDrippers(next.cd_drippers); setFavorites(next.cd_favorites);
+    setLogs(next.cd_logs); setProposed(next.cd_proposed); setProfile(next.cd_profile);
+    return results.every(Boolean);
+  };
+
   const [editingId, setEditingId] = useState(null);
   const [flowStep, setFlowStep] = useState("rec1");
   const [showResume, setShowResume] = useState(false);
@@ -400,7 +437,7 @@ export default function App() {
         {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
-        {screen === "profile" && <Profile profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
+        {screen === "profile" && <Profile makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} />}
         {screen === "rec2" && <Rec2 draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
@@ -2491,7 +2528,7 @@ function Auth() {
 }
 
 // ====== プロフィール ======
-function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
+function Profile({ makeBackup, restoreBackup, profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
   const [editOpen, setEditOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const notify = useContext(ToastCtx);
@@ -2545,7 +2582,7 @@ function Profile({ profile, saveProfile, logs, beans, favorites, email, onLogout
       <Btn kind="ghost" onClick={onLogout} style={{ width: "100%", marginTop: 14 }}>ログアウト</Btn>
 
       {editOpen && <ProfileEditModal profile={profile} saveProfile={saveProfile} onClose={() => setEditOpen(false)} notify={notify} />}
-      {settingsOpen && <SettingsModal email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
+      {settingsOpen && <SettingsModal makeBackup={makeBackup} restoreBackup={restoreBackup} email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
     </div>
   );
 }
@@ -2593,8 +2630,43 @@ function ProfileEditModal({ profile, saveProfile, onClose, notify }) {
 }
 
 // 設定（アカウント・ログアウト・削除）
-function SettingsModal({ email, onClose, onRequestDeleteAccount }) {
-  const [mode, setMode] = useState(null); // null | email | pw
+function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDeleteAccount }) {
+  const [mode, setMode] = useState(null); // null | email | pw | restore
+  const notify = useContext(ToastCtx);
+  const fileRef = useRef(null);
+  const [pending, setPending] = useState(null); // 読み込んだバックアップ（確認待ち）
+  const [restoreMsg, setRestoreMsg] = useState("");
+  // 前回の書き出し日時（この端末のみ・目安表示用）
+  const [lastExport, setLastExport] = useState(() => { try { return localStorage.getItem("cd_last_export") || ""; } catch { return ""; } });
+  const exportNow = () => {
+    downloadJSON(makeBackup(), backupFileName());
+    const now = new Date().toISOString();
+    try { localStorage.setItem("cd_last_export", now); } catch { /* 保存できなくても書き出しは成功 */ }
+    setLastExport(now);
+    notify("データを書き出しました");
+  };
+  const pickFile = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setRestoreMsg("");
+    try {
+      const obj = JSON.parse(await f.text());
+      const err = validateBackup(obj);
+      if (err) { setRestoreMsg(err); return; }
+      setPending(obj); setMode("restore");
+    } catch { setRestoreMsg("ファイルを読み込めませんでした。"); }
+  };
+  const doRestore = async () => {
+    setBusy(true);
+    // 置き換える前に、今のデータを自動で書き出しておく
+    downloadJSON(makeBackup(), backupFileName("-before-restore"));
+    const ok = await restoreBackup(pending);
+    setBusy(false);
+    if (ok) { notify("バックアップから復元しました"); setPending(null); setMode(null); }
+    else setRestoreMsg("一部のデータを保存できませんでした。通信状態を確認して、もう一度お試しください。");
+  };
+  const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
   const [newEmail, setNewEmail] = useState("");
   const [newPw, setNewPw] = useState("");
   const [acctMsg, setAcctMsg] = useState("");
@@ -2676,6 +2748,34 @@ function SettingsModal({ email, onClose, onRequestDeleteAccount }) {
       )}
 
       {acctMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 12, lineHeight: 1.7 }}>{acctMsg}</div>}
+
+      {mode === null && (
+        <>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データ</div>
+          {row("データを書き出す", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}` : "未実施", exportNow)}
+          {row("バックアップから復元", "ファイルを選ぶ", () => fileRef.current?.click())}
+          <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{ display: "none" }} />
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>記録・豆・器具・定番レシピなど、すべてのデータを1つのファイルに保存します。ときどき書き出しておくと安心です。</div>
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 8, lineHeight: 1.7 }}>{restoreMsg}</div>}
+        </>
+      )}
+
+      {mode === "restore" && pending && (
+        <div className="cd-fade" style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>このバックアップで復元しますか？</div>
+          <div style={{ background: "var(--paper)", borderRadius: 12, padding: "10px 14px", fontSize: 12.5, lineHeight: 1.9, marginBottom: 10 }}>
+            <div>書き出した日時：<b>{fmtDate(pending.exportedAt)}</b></div>
+            <div>記録 <b>{pending.data.cd_logs.length}</b>杯 · 豆 <b>{pending.data.cd_beans.length}</b>袋 · 定番レシピ <b>{pending.data.cd_favorites.length}</b>件</div>
+            <div>ミル {pending.data.cd_grinders.length}台 · ドリッパー {pending.data.cd_drippers.length}台</div>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--terra)", lineHeight: 1.7, marginBottom: 12 }}>今のデータはすべて、このバックアップの内容に置き換わります。念のため、置き換える前に今のデータを自動で書き出します。</div>
+          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn kind="ghost" onClick={() => { setPending(null); setMode(null); setRestoreMsg(""); }} style={{ flex: 1 }}>キャンセル</Btn>
+            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "復元中…" : "復元する"}</Btn>
+          </div>
+        </div>
+      )}
 
       {mode === null && (
         <div style={{ borderTop: "1px solid var(--line)", marginTop: 24, paddingTop: 18 }}>
