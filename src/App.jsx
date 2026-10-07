@@ -119,13 +119,6 @@ const backupFileName = (suffix = "") => {
   const d = new Date(), p = (n) => String(n).padStart(2, "0");
   return `drip-diary-backup-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${suffix}.json`;
 };
-// 読み込んだファイルがこのアプリのバックアップかを確認する
-const validateBackup = (obj) => {
-  if (!obj || obj.app !== "drip-diary" || !obj.data) return "Drip Diary のバックアップファイルではありません。";
-  const d = obj.data;
-  for (const k of ["cd_beans", "cd_grinders", "cd_drippers", "cd_favorites", "cd_logs"]) if (!Array.isArray(d[k])) return "ファイルの中身が壊れているようです。";
-  return null;
-};
 
 // ====== 変更履歴（user_data_history、DBのトリガーが自動で記録）======
 // 履歴の各行は「その変更で上書きされる前の値」。次の行（または現在の値）と比べると、何をした変更かが分かる
@@ -2953,10 +2946,9 @@ function ProfileEditModal({ profile, saveProfile, onClose, notify }) {
 
 // 設定（アカウント・ログアウト・削除）
 function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDeleteAccount }) {
-  const [mode, setMode] = useState(null); // null | email | pw | restore
+  const [mode, setMode] = useState(null); // null | email | pw | history | restore
   const notify = useContext(ToastCtx);
-  const fileRef = useRef(null);
-  const [pending, setPending] = useState(null); // 読み込んだバックアップ（確認待ち）
+  const [pending, setPending] = useState(null); // 戻す先の時点（確認待ち）
   const [changes, setChanges] = useState(null); // 変更履歴（新しい順）
   const openHistory = async () => {
     setMode("history"); setChanges(null); setRestoreMsg("");
@@ -2983,32 +2975,16 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
     const now = new Date().toISOString();
     try { localStorage.setItem("cd_last_export", now); } catch { /* 保存できなくても書き出しは成功 */ }
     setLastExport(now);
-    notify("データを書き出しました");
-  };
-  const pickFile = async (e) => {
-    const f = e.target.files?.[0];
-    e.target.value = "";
-    if (!f) return;
-    setRestoreMsg("");
-    try {
-      const obj = JSON.parse(await f.text());
-      const err = validateBackup(obj);
-      if (err) { setRestoreMsg(err); return; }
-      setPending(obj); setMode("restore");
-    } catch { setRestoreMsg("ファイルを読み込めませんでした。"); }
+    notify("データをダウンロードしました");
   };
   const doRestore = async () => {
     setBusy(true);
-    // ファイルからの復元は、置き換える前に今のデータを自動で書き出しておく
-    // （自動バックアップからの復元は、復元前の状態も履歴に残るので不要）
-    if (!pending.fromHistory) downloadJSON(makeBackup(), backupFileName("-before-restore"));
-    const ok = await restoreBackup(pending);
+    const ok = await restoreBackup(pending); // 戻す前の状態も変更履歴に残るので、取り消せる
     setBusy(false);
-    if (ok) { notify(pending.fromHistory ? "元に戻しました" : "ファイルから復元しました"); setPending(null); setMode(null); }
+    if (ok) { notify("元に戻しました"); setPending(null); setMode(null); }
     else setRestoreMsg("一部のデータを保存できませんでした。通信状態を確認して、もう一度お試しください。");
   };
   const fmtShort = (t) => new Date(t).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("ja-JP", { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
   const [newEmail, setNewEmail] = useState("");
   const [newPw, setNewPw] = useState("");
   const [acctMsg, setAcctMsg] = useState("");
@@ -3093,14 +3069,13 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
 
       {mode === null && (
         <>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データ</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データとプライバシー</div>
           {row("変更履歴", "以前の状態に戻す", openHistory)}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>変更のたびに、サーバーへ自動でバックアップされます（直近7日はすべて、90日前までは1日1つ）。</div>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "18px 0 4px", letterSpacing: ".04em" }}>ファイル（手元に保存したいとき）</div>
-          {row("ファイルに書き出す", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric" })}` : "", exportNow)}
-          {row("ファイルから復元", "ファイルを選ぶ", () => fileRef.current?.click())}
-          <input ref={fileRef} type="file" accept="application/json,.json" onChange={pickFile} style={{ display: "none" }} />
-          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginTop: 8, lineHeight: 1.7 }}>{restoreMsg}</div>}
+          {row("データをダウンロード", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP")}` : "ファイルで受け取る", exportNow)}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>
+            データは変更のたびに、サーバーへ自動でバックアップされます（直近7日はすべて、90日前までは1日1つ）。<br />
+            「データをダウンロード」では、記録・豆・器具・定番レシピなど、すべてのデータを1つのファイルで受け取れます。
+          </div>
         </>
       )}
 
@@ -3130,7 +3105,7 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
         </div>
       )}
 
-      {mode === "restore" && pending && pending.fromHistory && (
+      {mode === "restore" && pending && (
         <div className="cd-fade" style={{ marginTop: 18 }}>
           <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>{pending.at ? `${fmtShort(pending.at)} の状態に戻しますか？` : "最も古いバックアップの状態に戻しますか？"}</div>
           <div style={{ fontSize: 12.5, color: "var(--mocha)", marginBottom: 6 }}>これより後の変更（{pending.undone.length}件）が取り消されます。</div>
@@ -3152,21 +3127,9 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
         </div>
       )}
 
-      {mode === "restore" && pending && !pending.fromHistory && (
-        <div className="cd-fade" style={{ marginTop: 18 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 8 }}>このファイルの内容に復元しますか？</div>
-          <div style={{ fontSize: 12.5, color: "var(--bean)", lineHeight: 1.8, marginBottom: 10 }}>書き出した日時：{fmtDate(pending.exportedAt)}</div>
-          <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.7, marginBottom: 12 }}>現在のデータは上書きされます。復元の前に、現在のデータを自動でファイルに書き出します。</div>
-          {restoreMsg && <div style={{ fontSize: 12, color: "var(--terra)", marginBottom: 10, lineHeight: 1.7 }}>{restoreMsg}</div>}
-          <div style={{ display: "flex", gap: 10 }}>
-            <Btn kind="ghost" onClick={() => { setPending(null); setRestoreMsg(""); setMode(null); }} style={{ flex: 1 }}>キャンセル</Btn>
-            <Btn disabled={busy} onClick={doRestore} style={{ flex: 2 }}>{busy ? "処理中…" : "復元"}</Btn>
-          </div>
-        </div>
-      )}
 
       {mode === null && (
-        <div style={{ borderTop: "1px solid var(--line)", marginTop: 24, paddingTop: 18 }}>
+        <div style={{ marginTop: 18 }}>
           <button onClick={onRequestDeleteAccount} style={{ width: "100%", background: "none", border: "1.5px solid var(--danger)", color: "var(--danger)", fontWeight: 700, fontSize: 13.5, padding: "12px", borderRadius: 12, cursor: "pointer", fontFamily: "'Zen Kaku Gothic New',sans-serif" }}>アカウントを削除する</button>
           <div style={{ fontSize: 11, color: "var(--muted)", textAlign: "center", marginTop: 10, lineHeight: 1.7 }}>アカウントとすべての記録が削除され、元に戻せません。</div>
         </div>
