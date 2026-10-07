@@ -541,7 +541,7 @@ export default function App() {
         {screen === "logdetail" && (() => { const l = logs.find(x => x.id === detailId); return l ? <LogDetail log={l} bean={beans.find(b => b.id === l.beanId)} grinder={grinders.find(g => g.id === l.grinderId)} dripper={drippers.find(d => d.id === l.dripperId)} startRecord={startRecord} onEdit={() => startRecord(l, "rec1", l.id)} onRequestDelete={() => setConfirmDelId(l.id)} /> : <div style={{ color: "var(--muted)" }}>記録が見つかりません。</div>; })()}
         {screen === "history" && <History logs={logs} beans={beans} grinders={grinders} drippers={drippers} startRecord={startRecord} openLog={(id) => { setDetailId(id); setDetailFrom("history"); setScreen("logdetail"); }} />}
         {screen === "karte" && <Karte beans={beans} saveBeans={saveBeans} logs={logs} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} startRecord={startRecord} />}
-        {screen === "profile" && <Profile suggestions={suggestions} saveSuggestions={saveSuggestions} makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
+        {screen === "profile" && <Profile isAdmin={session.user.app_metadata?.role === "admin"} suggestions={suggestions} saveSuggestions={saveSuggestions} makeBackup={makeBackup} restoreBackup={restoreBackup} profile={profile} saveProfile={saveProfile} logs={logs} beans={beans} favorites={favorites} email={session.user.email} onLogout={() => supabase.auth.signOut()} onRequestDeleteAccount={() => setConfirmDelAccount(true)} />}
         {screen === "rec1" && <Rec1 draft={draft} setDraft={setDraft} beans={beans} saveBeans={saveBeans} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}
         {screen === "rec2" && <Rec2 editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} saveGrinders={saveGrinders} drippers={drippers} saveDrippers={saveDrippers} favorites={favorites} saveFavorites={saveFavorites} setScreen={setScreen} />}
         {screen === "rec3" && <Rec3 draft={draft} setDraft={setDraft} setScreen={setScreen} editing={!!editingId} onSaveDirect={() => saveDraftAsLog({ ...draft })} />}        {screen === "chat" && <Chat draft={draft} setDraft={setDraft} beans={beans} grinders={grinders} drippers={drippers} favorites={favorites} saveFavorites={saveFavorites} logs={logs}
@@ -2842,7 +2842,7 @@ function Auth() {
 }
 
 // ====== プロフィール ======
-function Profile({ suggestions, saveSuggestions, makeBackup, restoreBackup, profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
+function Profile({ isAdmin, suggestions, saveSuggestions, makeBackup, restoreBackup, profile, saveProfile, logs, beans, favorites, email, onLogout, onRequestDeleteAccount }) {
   const [editOpen, setEditOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const notify = useContext(ToastCtx);
@@ -2897,7 +2897,7 @@ function Profile({ suggestions, saveSuggestions, makeBackup, restoreBackup, prof
       <Btn kind="ghost" onClick={onLogout} style={{ width: "100%", marginTop: 14 }}>ログアウト</Btn>
 
       {editOpen && <ProfileEditModal profile={profile} saveProfile={saveProfile} onClose={() => setEditOpen(false)} notify={notify} />}
-      {settingsOpen && <SettingsModal makeBackup={makeBackup} restoreBackup={restoreBackup} email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
+      {settingsOpen && <SettingsModal isAdmin={isAdmin} makeBackup={makeBackup} restoreBackup={restoreBackup} email={email} onClose={() => setSettingsOpen(false)} onRequestDeleteAccount={() => { setSettingsOpen(false); onRequestDeleteAccount(); }} />}
     </div>
   );
 }
@@ -2945,7 +2945,7 @@ function ProfileEditModal({ profile, saveProfile, onClose, notify }) {
 }
 
 // 設定（アカウント・ログアウト・削除）
-function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDeleteAccount }) {
+function SettingsModal({ isAdmin, makeBackup, restoreBackup, email, onClose, onRequestDeleteAccount }) {
   const [mode, setMode] = useState(null); // null | email | pw | history | restore
   const notify = useContext(ToastCtx);
   const [pending, setPending] = useState(null); // 戻す先の時点（確認待ち）
@@ -3071,10 +3071,10 @@ function SettingsModal({ makeBackup, restoreBackup, email, onClose, onRequestDel
         <>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--muted)", margin: "22px 0 4px", letterSpacing: ".04em" }}>データとプライバシー</div>
           {row("変更履歴", "以前の状態に戻す", openHistory)}
-          {row("データをダウンロード", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP")}` : "ファイルで受け取る", exportNow)}
+          {isAdmin && row("データをダウンロード", lastExport ? `前回 ${new Date(lastExport).toLocaleDateString("ja-JP")}` : "ファイルで受け取る", exportNow)}
           <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8, lineHeight: 1.7 }}>
-            データは変更のたびに、サーバーへ自動でバックアップされます（直近7日はすべて、90日前までは1日1つ）。<br />
-            「データをダウンロード」では、記録・豆・器具・定番レシピなど、すべてのデータを1つのファイルで受け取れます。
+            データは変更のたびに、サーバーへ自動でバックアップされます（直近7日はすべて、90日前までは1日1つ）。
+            {isAdmin && <><br />「データをダウンロード」では、記録・豆・器具・定番レシピなど、すべてのデータを1つのファイルで受け取れます（運営者のみ表示）。</>}
           </div>
         </>
       )}
